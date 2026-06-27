@@ -1,6 +1,7 @@
 #pragma once
 
 #include <CrossPointSettings.h>
+#include <Epub/EpubRenderMode.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalTiltSensor.h>
@@ -13,9 +14,30 @@
 
 namespace ReaderUtils {
 
+constexpr char BALANCED_SECTION_CACHE_SUFFIX[] = "_balanced";
+constexpr char LIGHT_SECTION_CACHE_SUFFIX[] = "_light";
+
+inline const char* sectionCacheSuffixForRenderMode(const EpubRenderMode renderMode) {
+  switch (renderMode) {
+    case EpubRenderMode::Balanced:
+      return BALANCED_SECTION_CACHE_SUFFIX;
+    case EpubRenderMode::Light:
+      return LIGHT_SECTION_CACHE_SUFFIX;
+    case EpubRenderMode::CrossInkDefault:
+    default:
+      return "";
+  }
+}
+
 constexpr unsigned long SKIP_HOLD_MS = 700;
 constexpr unsigned long GO_HOME_MS = 1000;
 constexpr uint8_t STATUS_BAR_TEXT_PADDING = 3;
+constexpr unsigned long BOOKMARK_HOLD_MS = 400;
+// Duration any transient reader popup (bookmark added/removed, search match) stays on screen.
+constexpr unsigned long READER_MESSAGE_DURATION_MS = 2500;
+
+// Clamp a progress value to the inclusive 0-100 percent range.
+constexpr int clampPercent(int percent) { return percent < 0 ? 0 : (percent > 100 ? 100 : percent); }
 
 inline GfxRenderer::Orientation toRendererOrientation(const uint8_t orientation) {
   switch (orientation) {

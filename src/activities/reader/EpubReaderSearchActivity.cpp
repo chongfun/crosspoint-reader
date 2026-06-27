@@ -1,0 +1,348 @@
+#include "EpubReaderSearchActivity.h"
+
+#include <GfxRenderer.h>
+#include <I18n.h>
+#include <Logging.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+
+#include "CrossPointSettings.h"
+#include "MappedInputManager.h"
+#include "ReaderUtils.h"
+#include "components/UITheme.h"
+#include "fontIds.h"
+
+namespace {
+// Repaint the progress screen only once the percentage has advanced this much,
+// keeping e-ink refreshes bounded now that progress moves per page.
+constexpr int PROGRESS_REPAINT_STEP_PERCENT = 1;
+}  // namespace
+
+void EpubReaderSearchActivity::SearchRoute::resolvePageCount(const int targetPageCount) {
+  if (sourcePageCount <= 0) {
+    return;
+  }
+
+  const bool findNext = startPage > stopPage;
+  if (targetPageCount <= 0) {
+    startPage = 0;
+    stopPage = 0;
+    sourcePageCount = 0;
+    return;
+  }
+
+  const int64_t remappedPage = static_cast<int64_t>(stopPage) * targetPageCount / sourcePageCount;
+  stopPage = std::min(static_cast<int>(remappedPage), targetPageCount - 1);
+  startPage = stopPage + (findNext ? 1 : 0);
+  sourcePageCount = 0;
+}
+
+EpubReaderSearchActivity::EpubReaderSearchActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                                   const std::shared_ptr<Epub>& epub, const char* query,
+                                                   const SearchRoute& route, const uint16_t viewportWidth,
+                                                   const uint16_t viewportHeight)
+    : Activity("EpubReaderSearch", renderer, mappedInput),
+      epub(epub),
+      section(this->epub, route.startSpineIndex, renderer,
+              ReaderUtils::sectionCacheSuffixForRenderMode(isValidEpubRenderMode(SETTINGS.epubRenderMode)
+                                                               ? static_cast<EpubRenderMode>(SETTINGS.epubRenderMode)
+                                                               : EpubRenderMode::CrossInkDefault)),
+      route(route),
+      currentSpineIndex(route.startSpineIndex),
+      currentPage(route.startPage),
+      viewportWidth(viewportWidth),
+      viewportHeight(viewportHeight) {
+  if (query) {
+    const size_t length = std::min(strlen(query), this->query.size() - 1);
+    memcpy(this->query.data(), query, length);
+    this->query[length] = '\0';
+  }
+  // Compile the query once here; every page scan reuses the pattern + table. A
+  // rejected query (empty/oversized, or only separators) means there is nothing
+  // to scan, so fail closed rather than relying solely on the caller's gate.
+  if (!Section::compileSearchQuery(this->query.data(), compiledQuery)) {
+    state = SearchState::NotFound;
+  }
+}
+
+void EpubReaderSearchActivity::onEnter() {
+  Activity::onEnter();
+  // Paint the status screen before an uncached chapter starts its potentially
+  // long layout pass.
+  requestUpdateAndWait();
+}
+
+void EpubReaderSearchActivity::onExit() { Activity::onExit(); }
+
+bool EpubReaderSearchActivity::skipLoopDelay() { return state == SearchState::Searching; }
+
+bool EpubReaderSearchActivity::preventAutoSleep() { return state == SearchState::Searching; }
+
+void EpubReaderSearchActivity::cancel() {
+  ActivityResult result;
+  result.isCancelled = true;
+  setResult(std::move(result));
+  finish();
+}
+
+void EpubReaderSearchActivity::setFailure(const SearchState failureState) {
+  state = failureState;
+  requestUpdate();
+}
+
+bool EpubReaderSearchActivity::reachedWrappedStop() const {
+  if (!wrapped) {
+    return false;
+  }
+  return currentSpineIndex > route.startSpineIndex ||
+         (currentSpineIndex == route.startSpineIndex && currentPage >= route.stopPage);
+}
+
+bool EpubReaderSearchActivity::shouldScanWrappedStopContinuation() const {
+  // A fresh search already scanned stopPage from a clean KMP state. Revisit it
+  // only when the preceding page left a partial match; this admits the one
+  // occurrence that crosses the circular route boundary without changing find
+  // next's originating-page exclusion.
+  return wrapped && route.startPage == route.stopPage && currentSpineIndex == route.startSpineIndex &&
+         currentPage == route.stopPage && scanMatched > 0;
+}
+
+void EpubReaderSearchActivity::advanceSpine() {
+  ++currentSpineIndex;
+  currentPage = 0;
+  sectionLoaded = false;
+  sectionCacheRepairAttempted = false;
+  scanMatched = 0;  // spine boundary: don't carry a partial match across chapters
+}
+
+bool EpubReaderSearchActivity::loadCurrentSection() {
+  section.resetForSpine(currentSpineIndex);
+  const EpubRenderMode renderMode = isValidEpubRenderMode(SETTINGS.epubRenderMode)
+                                        ? static_cast<EpubRenderMode>(SETTINGS.epubRenderMode)
+                                        : EpubRenderMode::CrossInkDefault;
+  if (section.loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
+                              SETTINGS.extraParagraphSpacing, SETTINGS.forceParagraphIndents,
+                              SETTINGS.paragraphAlignment, viewportWidth, viewportHeight, SETTINGS.hyphenationEnabled,
+                              SETTINGS.embeddedStyle, SETTINGS.imageRendering, SETTINGS.bionicReadingEnabled,
+                              SETTINGS.guideReadingEnabled, renderMode)) {
+    sectionLoaded = true;
+    return true;
+  }
+
+  LOG_DBG("EPS", "Building section %d for search", currentSpineIndex);
+  if (!section.createSectionFile(
+          SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(), SETTINGS.extraParagraphSpacing,
+          SETTINGS.forceParagraphIndents, SETTINGS.paragraphAlignment, viewportWidth, viewportHeight,
+          SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle, SETTINGS.imageRendering, SETTINGS.bionicReadingEnabled,
+          SETTINGS.guideReadingEnabled, nullptr, nullptr, nullptr, renderMode)) {
+    LOG_ERR("EPS", "Failed to build section %d for search", currentSpineIndex);
+    return false;
+  }
+
+  sectionLoaded = true;
+  return true;
+}
+
+bool EpubReaderSearchActivity::invalidateCurrentSectionCache() {
+  // resetForSpine closes the member HalFile before clearCache removes its path.
+  section.resetForSpine(currentSpineIndex);
+  sectionLoaded = false;
+  if (!section.clearCache()) {
+    LOG_ERR("EPS", "Failed to clear corrupt section %d", currentSpineIndex);
+    return false;
+  }
+  return true;
+}
+
+bool EpubReaderSearchActivity::preparePage() {
+  const int spineCount = epub ? epub->getSpineItemsCount() : 0;
+  if (spineCount <= 0) {
+    setFailure(SearchState::Error);
+    return false;
+  }
+
+  while (true) {
+    if (currentSpineIndex >= spineCount) {
+      if (wrapped) {
+        setFailure(SearchState::NotFound);
+        return false;
+      }
+      wrapped = true;
+      currentSpineIndex = 0;
+      currentPage = 0;
+      sectionLoaded = false;
+      sectionCacheRepairAttempted = false;
+      scanMatched = 0;  // wrap is not contiguous reading text
+    }
+
+    if (reachedWrappedStop() && !shouldScanWrappedStopContinuation()) {
+      setFailure(SearchState::NotFound);
+      return false;
+    }
+
+    if (!sectionLoaded && !loadCurrentSection()) {
+      setFailure(SearchState::Error);
+      return false;
+    }
+
+    if (!wrapped && currentSpineIndex == route.startSpineIndex && route.sourcePageCount > 0) {
+      route.resolvePageCount(section.pageCount);
+      currentPage = route.startPage;
+    }
+
+    // Once the start spine is loaded, capture the byte-weighted positions of the
+    // scan's start and stop pages and the resulting route length, so progress
+    // reads against the reader's own progress model rather than a spine-count
+    // approximation. Done once (scanStartPos stays negative until captured).
+    if (scanStartPos < 0.0f && !wrapped && currentSpineIndex == route.startSpineIndex && epub) {
+      const float pc = section.pageCount > 0 ? static_cast<float>(section.pageCount) : 1.0f;
+      scanStartPos =
+          epub->calculateProgress(route.startSpineIndex, std::min(1.0f, static_cast<float>(route.startPage) / pc));
+      const float stopPos =
+          epub->calculateProgress(route.startSpineIndex, std::min(1.0f, static_cast<float>(route.stopPage) / pc));
+      // Route: forward from start to the end of the book (1.0), wrap, then up to
+      // the stop page. For a fresh search start == stop, giving a full route of 1.
+      scanRouteLength = (1.0f - scanStartPos) + stopPos;
+    }
+
+    if (currentPage >= 0 && currentPage < section.pageCount) {
+      return true;
+    }
+
+    advanceSpine();
+  }
+}
+
+void EpubReaderSearchActivity::scanNextPage() {
+  if (!preparePage()) {
+    return;
+  }
+
+  const size_t matchedBeforePage = scanMatched;
+  auto match = section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched);
+  if (!match.has_value() && !sectionCacheRepairAttempted) {
+    sectionCacheRepairAttempted = true;
+    scanMatched = matchedBeforePage;
+    if (!invalidateCurrentSectionCache() || !loadCurrentSection()) {
+      setFailure(SearchState::Error);
+      return;
+    }
+    match = section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched);
+  }
+
+  if (!match.has_value()) {
+    // Do not leave a version-valid but unreadable cache to fail every future search.
+    invalidateCurrentSectionCache();
+    setFailure(SearchState::Error);
+    return;
+  }
+  if (*match) {
+    setResult(ProgressChangeResult{currentSpineIndex, currentPage});
+    finish();
+    return;
+  }
+
+  ++currentPage;
+}
+
+int EpubReaderSearchActivity::searchProgressPercent() const {
+  if (!epub || scanStartPos < 0.0f) {
+    return 0;  // not yet started / start spine not loaded
+  }
+  if (scanRouteLength <= 0.0f) {
+    return 100;  // degenerate route (nothing eligible to scan)
+  }
+  // Current byte-weighted book position, using the same model as the reader's
+  // own progress bar (so the percentage tracks the bar rather than approximating
+  // every spine as equal length).
+  const float pc = section.pageCount > 0 ? static_cast<float>(section.pageCount) : 1.0f;
+  const float posNow = epub->calculateProgress(currentSpineIndex, std::min(1.0f, static_cast<float>(currentPage) / pc));
+  // Work done since the scan began: forward distance before the wrap, plus a
+  // full forward lap (1.0 - start) once wrapped.
+  const float workDone = wrapped ? (1.0f - scanStartPos) + posNow : posNow - scanStartPos;
+  return ReaderUtils::clampPercent(static_cast<int>((workDone / scanRouteLength) * 100.0f + 0.5f));
+}
+
+void EpubReaderSearchActivity::loop() {
+  // Do NOT poll input here. main.cpp's loop() already calls gpio.update() once
+  // per iteration before dispatching to this activity; a second poll would clear
+  // the just-latched press/release events (InputManager::update zeroes them every
+  // call) before wasReleased() reads them, making Back/Confirm undismissable.
+  switch (state) {
+    case SearchState::Searching:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        cancel();
+        return;
+      }
+      scanNextPage();
+      // Progress is now page-granular, so only repaint once it has advanced a
+      // whole step. This bounds e-ink refreshes to ~100/step over an entire
+      // scan regardless of book structure, instead of one per page.
+      if (state == SearchState::Searching) {
+        const int percent = searchProgressPercent();
+        if (percent - lastProgressPercent >= PROGRESS_REPAINT_STEP_PERCENT) {
+          lastProgressPercent = percent;
+          requestUpdate();
+        }
+      }
+      return;
+
+    case SearchState::NotFound:
+    case SearchState::Error:
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
+          mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        cancel();
+      }
+      return;
+  }
+}
+
+void EpubReaderSearchActivity::render(RenderLock&&) {
+  renderer.clearScreen();
+
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const Rect screen = UITheme::getInstance().getScreenSafeArea(renderer, true, false);
+  GUI.drawHeader(renderer, Rect{screen.x, screen.y + metrics.topPadding, screen.width, metrics.headerHeight},
+                 tr(STR_SEARCH));
+  GUI.drawSubHeader(
+      renderer,
+      Rect{screen.x, screen.y + metrics.topPadding + metrics.headerHeight, screen.width, metrics.tabBarHeight},
+      query.data());
+
+  const char* message = nullptr;
+  switch (state) {
+    case SearchState::Searching:
+      message = tr(STR_SEARCHING_BOOK);
+      break;
+    case SearchState::NotFound:
+      message = tr(STR_NO_SEARCH_RESULTS);
+      break;
+    case SearchState::Error:
+      message = tr(STR_ERROR_GENERAL_FAILURE);
+      break;
+  }
+
+  const int contentTop = screen.y + metrics.topPadding + metrics.headerHeight + metrics.tabBarHeight;
+  const int messageY = contentTop + (screen.height - contentTop) / 2;
+  UITheme::drawCenteredText(renderer, screen, UI_12_FONT_ID, messageY, message, true, EpdFontFamily::BOLD);
+
+  if (state == SearchState::Searching) {
+    // Draw the value loop() already computed and gated the repaint on, rather
+    // than recomputing the progress here.
+    char percentText[8];
+    snprintf(percentText, sizeof(percentText), "%d%%", lastProgressPercent);
+    UITheme::drawCenteredText(renderer, screen, UI_12_FONT_ID, messageY + renderer.getLineHeight(UI_12_FONT_ID),
+                              percentText, true);
+  }
+
+  // While searching, Back cancels. On terminal states (NotFound/Error) both Back
+  // and Confirm dismiss to the reader (see loop()), so advertise both.
+  const bool terminal = state != SearchState::Searching;
+  const char* backLabel = terminal ? tr(STR_BACK) : tr(STR_CANCEL);
+  const char* confirmLabel = terminal ? tr(STR_DONE) : "";
+  const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  renderer.displayBuffer();
+}

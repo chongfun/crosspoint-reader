@@ -5,6 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <array>
 #include <optional>
 #include <string>
 
@@ -118,6 +119,14 @@ class EpubReaderActivity final : public Activity {
   bool completionTriggerCrossed = false;
   bool lastAtOrPastCompletionTrigger = false;
 
+  // Transient popup shared by the bookmark and search-match messages: the text
+  // to show (null when hidden) and when it was shown. The pointer is from tr(),
+  // which returns stable storage in the static i18n string table.
+  const char* transientMessage = nullptr;
+  unsigned long transientMessageTime = 0UL;
+  std::array<char, Section::MAX_SEARCH_QUERY_BYTES + 1> lastSearchQuery{};
+  int lastSearchResultSpine = -1;
+  int lastSearchResultPage = -1;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).
   bool recentsEntryRemoved = false;
@@ -191,6 +200,10 @@ class EpubReaderActivity final : public Activity {
   bool executeLongPowerButtonAction();
   void handleClippingJump(const ClippingJumpResult& clipping);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  void launchSearchInput();
+  void launchBookSearch(const std::string& query);
+  // Show a transient popup (bookmark or search) for READER_MESSAGE_DURATION_MS.
+  void showTransientMessage(const char* message);
   void applyOrientation(uint8_t orientation);
   void pageTurn(bool isForwardTurn, const char* source = "unknown");
   float getCurrentBookProgressPercent() const;
