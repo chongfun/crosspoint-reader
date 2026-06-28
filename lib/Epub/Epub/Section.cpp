@@ -723,12 +723,7 @@ bool Section::compileSearchQuery(const std::string_view query, CompiledSearchQue
   return true;
 }
 
-std::optional<bool> Section::pageContainsText(const uint16_t page, const CompiledSearchQuery& query, size_t& matched,
-                                              const bool resetMatched) {
-  if (resetMatched) {
-    matched = 0;
-  }
-
+std::optional<bool> Section::pageContainsText(const uint16_t page, const CompiledSearchQuery& query, size_t& matched) {
   if (query.length == 0 || page >= pageCount) {
     LOG_ERR("SCT", "Invalid page search request (page=%u count=%u patternLen=%u)", page, pageCount,
             static_cast<unsigned>(query.length));

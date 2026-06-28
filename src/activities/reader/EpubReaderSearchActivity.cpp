@@ -220,27 +220,8 @@ void EpubReaderSearchActivity::scanNextPage() {
     return;
   }
 
-  bool isChapterBoundary = false;
-  if (currentPage > 0 && epub) {
-    const int startTocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-    if (startTocIndex >= 0) {
-      for (int i = startTocIndex; i < epub->getTocItemsCount(); i++) {
-        auto entry = epub->getTocItem(i);
-        if (entry.spineIndex != currentSpineIndex) break;
-        if (!entry.anchor.empty()) {
-          const auto entryPage = section.getPageForAnchor(entry.anchor);
-          if (entryPage.has_value() && *entryPage == currentPage) {
-            isChapterBoundary = true;
-            break;
-          }
-        }
-      }
-    }
-  }
-
   const size_t matchedBeforePage = scanMatched;
-  auto match =
-      section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched, isChapterBoundary);
+  auto match = section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched);
   if (!match.has_value() && !sectionCacheRepairAttempted) {
     sectionCacheRepairAttempted = true;
     scanMatched = matchedBeforePage;
@@ -248,7 +229,7 @@ void EpubReaderSearchActivity::scanNextPage() {
       setFailure(SearchState::Error);
       return;
     }
-    match = section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched, isChapterBoundary);
+    match = section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched);
   }
 
   if (!match.has_value()) {

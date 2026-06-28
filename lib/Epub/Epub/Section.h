@@ -132,8 +132,7 @@ class Section {
   // caller must reset it to 0 at any reading-order discontinuity (scan start,
   // spine change, wrap). An empty record resets it. nullopt indicates an
   // invalid/corrupt cache record; false is a valid miss.
-  std::optional<bool> pageContainsText(uint16_t page, const CompiledSearchQuery& query, size_t& matched,
-                                       bool resetMatched);
+  std::optional<bool> pageContainsText(uint16_t page, const CompiledSearchQuery& query, size_t& matched);
 
   // Look up the page number for an anchor id from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;

@@ -4570,24 +4570,7 @@ void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId
   searchHighlightMatchRanges.clear();
   size_t carryMatched = 0;
   for (uint16_t p = 0; p < section->currentPage; ++p) {
-    bool isChapterBoundary = false;
-    if (p > 0 && epub) {
-      const int startTocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
-      if (startTocIndex >= 0) {
-        for (int i = startTocIndex; i < epub->getTocItemsCount(); i++) {
-          auto entry = epub->getTocItem(i);
-          if (entry.spineIndex != currentSpineIndex) break;
-          if (!entry.anchor.empty()) {
-            const auto entryPage = section->getPageForAnchor(entry.anchor);
-            if (entryPage.has_value() && *entryPage == p) {
-              isChapterBoundary = true;
-              break;
-            }
-          }
-        }
-      }
-    }
-    section->pageContainsText(p, compiledQuery, carryMatched, isChapterBoundary);
+    section->pageContainsText(p, compiledQuery, carryMatched);
   }
 
   size_t matched = carryMatched;
