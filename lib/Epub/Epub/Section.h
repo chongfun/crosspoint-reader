@@ -54,6 +54,7 @@ class Section {
   // Lazily open the scan file and cache its size and page-LUT offset. Returns
   // false on open failure or a truncated/corrupt header.
   bool ensureSearchHeader();
+  void closeSearchState();
   // Rewrite filePath's numeric suffix in place for the current spineIndex,
   // reusing the buffer (no per-spine string allocation, no std::to_string).
   void rebuildFilePathForSpine();
@@ -131,7 +132,8 @@ class Section {
   // caller must reset it to 0 at any reading-order discontinuity (scan start,
   // spine change, wrap). An empty record resets it. nullopt indicates an
   // invalid/corrupt cache record; false is a valid miss.
-  std::optional<bool> pageContainsText(uint16_t page, const CompiledSearchQuery& query, size_t& matched);
+  std::optional<bool> pageContainsText(uint16_t page, const CompiledSearchQuery& query, size_t& matched,
+                                       bool resetMatched);
 
   // Look up the page number for an anchor id from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;

@@ -554,10 +554,22 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
     return nullptr;
   }
 
+  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t))) {
+    LOG_ERR("SCT", "Failed to seek to page count");
+    file.close();
+    return nullptr;
+  }
+  uint16_t headerPageCount = 0;
+  if (!serialization::tryReadPod(file, headerPageCount)) {
+    LOG_ERR("SCT", "Failed to read page count from header");
+    file.close();
+    return nullptr;
+  }
+
   // Validate LUT-derived offsets against the file before trusting them (mirrors
   // pageContainsText). Compute in 64-bit so a corrupt (huge) lutOffset cannot
   // wrap the uint32 sum into a small in-bounds value.
-  if (lutOffset == 0 || currentPage < 0) {
+  if (lutOffset == 0 || currentPage < 0 || static_cast<uint32_t>(currentPage) >= headerPageCount) {
     LOG_ERR("SCT", "Invalid page LUT request");
     file.close();
     return nullptr;
@@ -608,16 +620,19 @@ void Section::rebuildFilePathForSpine() {
   filePath.append(".bin");
 }
 
-void Section::resetForSpine(const int newSpineIndex) {
+void Section::closeSearchState() {
   if (file) {
-    // Member handle persists across calls, so close before switching paths.
     file.close();
   }
+  searchHeaderReady = false;
+}
+
+void Section::resetForSpine(const int newSpineIndex) {
+  closeSearchState();
   spineIndex = newSpineIndex;
   rebuildFilePathForSpine();
   pageCount = 0;
   currentPage = 0;
-  searchHeaderReady = false;
 }
 bool Section::ensureSearchHeader() {
   if (searchHeaderReady) {
@@ -637,14 +652,14 @@ bool Section::ensureSearchHeader() {
     LOG_ERR("SCT", "Search failed: section cache header is truncated");
     // Release the handle so the corrupt cache can be invalidated/rebuilt; the
     // next call reopens lazily (searchHeaderReady stays false).
-    file.close();
+    closeSearchState();
     return false;
   }
 
   uint32_t lutOffset = 0;
   if (!readPageLutOffset(lutOffset)) {
     LOG_ERR("SCT", "Search failed: could not read page LUT offset");
-    file.close();
+    closeSearchState();
     return false;
   }
 
@@ -708,10 +723,16 @@ bool Section::compileSearchQuery(const std::string_view query, CompiledSearchQue
   return true;
 }
 
-std::optional<bool> Section::pageContainsText(const uint16_t page, const CompiledSearchQuery& query, size_t& matched) {
+std::optional<bool> Section::pageContainsText(const uint16_t page, const CompiledSearchQuery& query, size_t& matched,
+                                              const bool resetMatched) {
+  if (resetMatched) {
+    matched = 0;
+  }
+
   if (query.length == 0 || page >= pageCount) {
     LOG_ERR("SCT", "Invalid page search request (page=%u count=%u patternLen=%u)", page, pageCount,
             static_cast<unsigned>(query.length));
+    closeSearchState();
     return std::nullopt;
   }
 
@@ -727,28 +748,33 @@ std::optional<bool> Section::pageContainsText(const uint16_t page, const Compile
   const uint64_t entryOffset = static_cast<uint64_t>(lutOffset) + static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * page;
   if (lutOffset == 0 || entryOffset > fileSize || fileSize - entryOffset < PAGE_LUT_ENTRY_SIZE) {
     LOG_ERR("SCT", "Search failed: invalid page LUT entry");
+    closeSearchState();
     return std::nullopt;
   }
 
   if (!file.seek(static_cast<size_t>(entryOffset) + sizeof(uint32_t))) {
     LOG_ERR("SCT", "Search failed: could not seek to page LUT entry");
+    closeSearchState();
     return std::nullopt;
   }
   uint32_t searchTextOffset = 0;
   if (file.read(reinterpret_cast<uint8_t*>(&searchTextOffset), sizeof(searchTextOffset)) != sizeof(searchTextOffset) ||
       searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
     LOG_ERR("SCT", "Search failed: invalid text record offset");
+    closeSearchState();
     return std::nullopt;
   }
 
   if (!file.seek(searchTextOffset)) {
     LOG_ERR("SCT", "Search failed: could not seek to text record");
+    closeSearchState();
     return std::nullopt;
   }
   uint32_t remaining = 0;
   if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining) ||
       remaining > fileSize - searchTextOffset - sizeof(uint32_t)) {
     LOG_ERR("SCT", "Search failed: invalid text record length");
+    closeSearchState();
     return std::nullopt;
   }
 
@@ -772,6 +798,7 @@ std::optional<bool> Section::pageContainsText(const uint16_t page, const Compile
     const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
     if (file.read(buffer.data(), chunkSize) != chunkSize) {
       LOG_ERR("SCT", "Search failed: truncated text record");
+      closeSearchState();
       return std::nullopt;
     }
     remaining -= chunkSize;
@@ -827,9 +854,13 @@ std::optional<uint16_t> Section::getCachedPageCount() const {
     return std::nullopt;
   }
 
-  f.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t));
+  if (!f.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t))) {
+    return std::nullopt;
+  }
   uint16_t count;
-  serialization::readPod(f, count);
+  if (!serialization::tryReadPod(f, count)) {
+    return std::nullopt;
+  }
   return count;
 }
 
