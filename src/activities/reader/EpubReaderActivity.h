@@ -121,9 +121,9 @@ class EpubReaderActivity final : public Activity {
   bool completionTriggerCrossed = false;
   bool lastAtOrPastCompletionTrigger = false;
 
-  // Transient popup shared by the bookmark and search-match messages: the text
-  // to show (null when hidden) and when it was shown. The pointer is from tr(),
-  // which returns stable storage in the static i18n string table.
+  // Transient toast used by the search feature: the text to show (null when hidden)
+  // and when it was shown. The pointer is from tr(), which returns stable storage
+  // in the static i18n string table.
   const char* transientMessage = nullptr;
   unsigned long transientMessageTime = 0UL;
   std::array<char, Section::MAX_SEARCH_QUERY_BYTES + 1> lastSearchQuery{};
@@ -210,7 +210,7 @@ class EpubReaderActivity final : public Activity {
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   void launchSearchInput();
   void launchBookSearch(const std::string& query);
-  // Show a transient popup (bookmark or search) for READER_MESSAGE_DURATION_MS.
+  // Show a transient search toast for READER_MESSAGE_DURATION_MS.
   void showTransientMessage(const char* message);
   void applyOrientation(uint8_t orientation);
   void pageTurn(bool isForwardTurn, const char* source = "unknown");

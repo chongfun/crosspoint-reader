@@ -4073,9 +4073,6 @@ void EpubReaderActivity::render(RenderLock&& lock) {
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
   }
-  if (transientMessage) {
-    GUI.drawPopup(renderer, transientMessage);
-  }
 }
 
 void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportWidth, const uint16_t viewportHeight) {
@@ -4318,6 +4315,9 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
     drawToastBuffer(renderer, tr(STR_SAFE_MODE));
   } else if (pendingRenderModeToast) {
     drawToastBuffer(renderer, labelForRenderModeToast(normalizeRenderMode(renderModeToastMode)));
+  }
+  if (transientMessage) {
+    drawToastBuffer(renderer, transientMessage);
   }
   fcm->logStats("bw_render");
   const auto tBwRender = millis();
