@@ -1073,18 +1073,27 @@ struct ReaderViewport {
 ReaderViewport calculateReaderViewport(GfxRenderer& renderer, const bool automaticPageTurnActive) {
   ReaderViewport viewport{};
   renderer.getOrientedViewableTRBL(&viewport.top, &viewport.right, &viewport.bottom, &viewport.left);
-  viewport.top += SETTINGS.screenMargin;
-  viewport.left += SETTINGS.screenMargin;
+  viewport.left += effectiveReaderLeftMargin();
   viewport.right += SETTINGS.screenMargin;
 
   const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
+  const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
+  if (topStatusBarReservedHeight > 0) {
+    viewport.top += std::max(static_cast<int>(SETTINGS.screenMargin),
+                             topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
+  } else {
+    viewport.top += SETTINGS.screenMargin;
+  }
+
   if (automaticPageTurnActive &&
       (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
     viewport.bottom +=
         std::max(SETTINGS.screenMargin,
-                 static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin));
+                 static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin +
+                                      ReaderUtils::STATUS_BAR_TEXT_PADDING));
   } else {
-    viewport.bottom += std::max(SETTINGS.screenMargin, statusBarHeight);
+    viewport.bottom +=
+        std::max(SETTINGS.screenMargin, static_cast<uint8_t>(statusBarHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING));
   }
 
   viewport.width = renderer.getScreenWidth() - viewport.left - viewport.right;
@@ -3397,8 +3406,10 @@ void EpubReaderActivity::launchSearchInput() {
     return;
   }
 
+  pauseReadingPaceTimer("search");
   startActivityForResult(std::move(keyboard), [this](const ActivityResult& result) {
     if (result.isCancelled) {
+      resumeReadingPaceTimer("search_cancel");
       requestUpdate();
       return;
     }
@@ -3408,6 +3419,7 @@ void EpubReaderActivity::launchSearchInput() {
       // Surface why the search was not accepted (e.g. whitespace/hyphen-only
       // input) instead of silently repainting, which reads as a no-op.
       showTransientMessage(tr(STR_INVALID_SEARCH_QUERY));
+      resumeReadingPaceTimer("search_invalid");
       requestUpdate();
       return;
     }
@@ -3417,22 +3429,27 @@ void EpubReaderActivity::launchSearchInput() {
 
 void EpubReaderActivity::launchBookSearch(const std::string& query) {
   if (!epub || epub->getSpineItemsCount() <= 0) {
+    resumeReadingPaceTimer("search_invalid_book");
     requestUpdate();
     return;
   }
 
   const int resumePage = section ? section->currentPage : nextPageNumber;
-  const int searchStartSpine =
-      (currentSpineIndex >= 0 && currentSpineIndex < epub->getSpineItemsCount()) ? currentSpineIndex : 0;
+  const int realSpine =
+      (activeFootnotePreview && footnoteDepth > 0) ? savedPositions[footnoteDepth - 1].spineIndex : currentSpineIndex;
+  const int realPage =
+      (activeFootnotePreview && footnoteDepth > 0) ? savedPositions[footnoteDepth - 1].pageNumber : resumePage;
+
+  const int searchStartSpine = (realSpine >= 0 && realSpine < epub->getSpineItemsCount()) ? realSpine : 0;
   const bool hasPendingPageRemap = !section && cachedChapterTotalPageCount > 0 && cachedSpineIndex == searchStartSpine;
   // The page the search is initiated from (the wrap normally stops before
   // re-examining it). A fresh search may revisit it only to complete a match
   // begun on the preceding page. "Find next" begins one page past it so a wrap
   // cannot re-return it; SearchRoute owns that start/stop relationship.
-  const int initiatedFromPage = searchStartSpine == currentSpineIndex ? std::max(0, resumePage) : 0;
+  const int initiatedFromPage = searchStartSpine == realSpine ? std::max(0, realPage) : 0;
   const bool sameQuery = strcmp(lastSearchQuery.data(), query.c_str()) == 0;
-  const bool isFindNext = !hasPendingPageRemap && sameQuery && lastSearchResultSpine == currentSpineIndex &&
-                          lastSearchResultPage == resumePage;
+  const bool isFindNext =
+      !hasPendingPageRemap && sameQuery && lastSearchResultSpine == realSpine && lastSearchResultPage == realPage;
   const EpubReaderSearchActivity::SearchRoute route = EpubReaderSearchActivity::SearchRoute::make(
       searchStartSpine, initiatedFromPage, isFindNext, hasPendingPageRemap ? cachedChapterTotalPageCount : 0);
 
@@ -3456,6 +3473,7 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
                                                                     viewport.width, viewport.height);
   if (!searchActivity) {
     LOG_ERR("ERS", "OOM: EpubReaderSearchActivity (%u bytes)", static_cast<unsigned>(sizeof(EpubReaderSearchActivity)));
+    resumeReadingPaceTimer("search_oom");
     requestUpdate();
     return;
   }
@@ -3479,6 +3497,7 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
       lastSearchResultPage = match.page;
       showTransientMessage(tr(STR_SEARCH_MATCH_FOUND));
     }
+    resumeReadingPaceTimer("search_return");
   });
 }
 
@@ -4520,17 +4539,9 @@ void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId
     return;
   }
 
-  // 1. Normalize the search query (lowercase, drop spaces and hyphens)
-  searchHighlightQuery.clear();
-  const char* q = lastSearchQuery.data();
-  while (*q != '\0') {
-    const char c = *q;
-    if (c != ' ' && c != '-') {
-      searchHighlightQuery.push_back((c >= 'A' && c <= 'Z') ? (c + 32) : c);
-    }
-    q++;
-  }
-  if (searchHighlightQuery.empty()) {
+  // 1. Compile the search query once using KMP
+  Section::CompiledSearchQuery compiledQuery{};
+  if (!Section::compileSearchQuery(lastSearchQuery.data(), compiledQuery)) {
     return;
   }
 
@@ -4555,19 +4566,50 @@ void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId
         return true;
       });
 
-  // 3. Find matches of normalizedQuery in normalizedPageText
+  // 3. Find matches of compiledQuery in normalizedPageText incorporating prior page state
   searchHighlightMatchRanges.clear();
-  size_t pos = 0;
-  while ((pos = searchHighlightPageText.find(searchHighlightQuery, pos)) != std::string::npos) {
-    const size_t endPos = pos + searchHighlightQuery.size() - 1;
-    if (pos < searchHighlightCharToWordIndex.size() && endPos < searchHighlightCharToWordIndex.size()) {
-      if (searchHighlightMatchRanges.size() >= searchHighlightMatchRanges.capacity()) {
-        break;
+  size_t carryMatched = 0;
+  for (uint16_t p = 0; p < section->currentPage; ++p) {
+    bool isChapterBoundary = false;
+    if (p > 0 && epub) {
+      const int startTocIndex = epub->getTocIndexForSpineIndex(currentSpineIndex);
+      if (startTocIndex >= 0) {
+        for (int i = startTocIndex; i < epub->getTocItemsCount(); i++) {
+          auto entry = epub->getTocItem(i);
+          if (entry.spineIndex != currentSpineIndex) break;
+          if (!entry.anchor.empty()) {
+            const auto entryPage = section->getPageForAnchor(entry.anchor);
+            if (entryPage.has_value() && *entryPage == p) {
+              isChapterBoundary = true;
+              break;
+            }
+          }
+        }
       }
-      searchHighlightMatchRanges.push_back(
-          {searchHighlightCharToWordIndex[pos], searchHighlightCharToWordIndex[endPos]});
     }
-    pos += searchHighlightQuery.size();
+    section->pageContainsText(p, compiledQuery, carryMatched, isChapterBoundary);
+  }
+
+  size_t matched = carryMatched;
+  for (size_t charIndex = 0; charIndex < searchHighlightPageText.size(); ++charIndex) {
+    const uint8_t value = searchHighlightPageText[charIndex];
+    while (matched > 0 && value != compiledQuery.pattern[matched]) {
+      matched = compiledQuery.prefix[matched - 1];
+    }
+    if (value == compiledQuery.pattern[matched]) {
+      ++matched;
+      if (matched == compiledQuery.length) {
+        size_t startIdx = (charIndex + 1 >= matched) ? (charIndex + 1 - matched) : 0;
+        size_t endIdx = charIndex;
+        if (startIdx < searchHighlightCharToWordIndex.size() && endIdx < searchHighlightCharToWordIndex.size()) {
+          if (searchHighlightMatchRanges.size() < searchHighlightMatchRanges.capacity()) {
+            searchHighlightMatchRanges.push_back(
+                {searchHighlightCharToWordIndex[startIdx], searchHighlightCharToWordIndex[endIdx]});
+          }
+        }
+        matched = compiledQuery.prefix[matched - 1];
+      }
+    }
   }
 
   if (searchHighlightMatchRanges.empty()) {
