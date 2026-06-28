@@ -1690,6 +1690,12 @@ void EpubReaderActivity::onEnter() {
     return;
   }
 
+  // Pre-allocate search highlight buffers to avoid render-path heap churn
+  searchHighlightQuery.reserve(64);
+  searchHighlightPageText.reserve(4096);
+  searchHighlightCharToWordIndex.reserve(4096);
+  searchHighlightMatchRanges.reserve(128);
+
   captureGlobalReaderSettings();
   epub->setupCacheDir();
   loadBookReaderSettings();
@@ -4211,6 +4217,11 @@ void EpubReaderActivity::cacheCurrentSectionPosition() {
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fontId, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
+  if (section && (currentSpineIndex != lastSearchResultSpine || section->currentPage != lastSearchResultPage)) {
+    lastSearchResultSpine = -1;
+    lastSearchResultPage = -1;
+  }
+
   const auto t0 = millis();
 
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
@@ -4241,6 +4252,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const auto finalizeBufferComposition = [&]() {
     drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
+    drawSearchHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
     drawPublisherPageMarkers(renderer, *page, orientedMarginTop, contentBottom, foregroundBlack);
   };
 
@@ -4496,6 +4508,117 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
         if (wordW > 0) {
           renderer.fillRectDither(wordX, wordY, wordW, wordH, Color::LightGray);
           renderer.drawText(fontId, wordX, wordY, visibleText, foregroundBlack, textStyle);
+        }
+        return true;
+      });
+}
+
+void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId, const int orientedMarginTop,
+                                              const int orientedMarginLeft) const {
+  if (lastSearchQuery[0] == '\0' || !section || currentSpineIndex != lastSearchResultSpine ||
+      section->currentPage != lastSearchResultPage) {
+    return;
+  }
+
+  // 1. Normalize the search query (lowercase, drop spaces and hyphens)
+  searchHighlightQuery.clear();
+  const char* q = lastSearchQuery.data();
+  while (*q != '\0') {
+    const char c = *q;
+    if (c != ' ' && c != '-') {
+      searchHighlightQuery.push_back((c >= 'A' && c <= 'Z') ? (c + 32) : c);
+    }
+    q++;
+  }
+  if (searchHighlightQuery.empty()) {
+    return;
+  }
+
+  // 2. Normalize the page text and map characters to word indices
+  searchHighlightPageText.clear();
+  searchHighlightCharToWordIndex.clear();
+
+  forEachVisiblePageWord(
+      page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
+        const std::string& wordText = block.getWords()[i];
+        for (char c : wordText) {
+          if (c == ' ' || c == '-') {
+            continue;
+          }
+          if (searchHighlightPageText.size() >= searchHighlightPageText.capacity() ||
+              searchHighlightCharToWordIndex.size() >= searchHighlightCharToWordIndex.capacity()) {
+            return false;
+          }
+          searchHighlightPageText.push_back((c >= 'A' && c <= 'Z') ? (c + 32) : c);
+          searchHighlightCharToWordIndex.push_back(pageWordIndex);
+        }
+        return true;
+      });
+
+  // 3. Find matches of normalizedQuery in normalizedPageText
+  searchHighlightMatchRanges.clear();
+  size_t pos = 0;
+  while ((pos = searchHighlightPageText.find(searchHighlightQuery, pos)) != std::string::npos) {
+    const size_t endPos = pos + searchHighlightQuery.size() - 1;
+    if (pos < searchHighlightCharToWordIndex.size() && endPos < searchHighlightCharToWordIndex.size()) {
+      if (searchHighlightMatchRanges.size() >= searchHighlightMatchRanges.capacity()) {
+        break;
+      }
+      searchHighlightMatchRanges.push_back(
+          {searchHighlightCharToWordIndex[pos], searchHighlightCharToWordIndex[endPos]});
+    }
+    pos += searchHighlightQuery.size();
+  }
+
+  if (searchHighlightMatchRanges.empty()) {
+    return;
+  }
+
+  // 4. Highlight matched words on page
+  const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
+  const auto isSearchMatchWord = [this](const uint16_t pageWordIndex) {
+    return std::any_of(
+        searchHighlightMatchRanges.begin(), searchHighlightMatchRanges.end(),
+        [pageWordIndex](const auto& range) { return pageWordIndex >= range.first && pageWordIndex <= range.second; });
+  };
+
+  forEachVisiblePageWord(
+      page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
+        if (!isSearchMatchWord(pageWordIndex)) {
+          return true;
+        }
+
+        const auto& wordList = block.getWords();
+        const auto& xpos = block.getWordXpos();
+        const auto& styles = block.getWordStyles();
+        if (i >= wordList.size() || i >= xpos.size() || i >= styles.size()) {
+          return true;
+        }
+
+        const std::string& wordText = wordList[i];
+        const bool hasEmSpace = hasEmSpacePrefix(wordText);
+        const char* visibleText = wordText.c_str() + (hasEmSpace ? 3 : 0);
+        const auto textStyle = static_cast<EpdFontFamily::Style>(styles[i] & ~EpdFontFamily::UNDERLINE);
+        const int skipX = hasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", textStyle) : 0;
+        const int wordX = orientedMarginLeft + line.xPos + xpos[i] + skipX;
+        const int wordY = orientedMarginTop + line.yPos;
+        int wordW = renderer.getTextAdvanceX(fontId, wordText.c_str(), textStyle) - skipX;
+        const int wordH = renderer.getLineHeight(fontId);
+        if (i + 1 < wordList.size() && i + 1 < xpos.size() && i + 1 < styles.size()) {
+          const std::string& nextWordText = wordList[i + 1];
+          const bool nextHasEmSpace = hasEmSpacePrefix(nextWordText);
+          const auto nextTextStyle = static_cast<EpdFontFamily::Style>(styles[i + 1] & ~EpdFontFamily::UNDERLINE);
+          const int nextSkipX = nextHasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", nextTextStyle) : 0;
+          const int nextWordX = orientedMarginLeft + line.xPos + xpos[i + 1] + nextSkipX;
+          if (isSearchMatchWord(pageWordIndex + 1) && nextWordX > wordX + wordW) {
+            wordW = nextWordX - wordX;
+          } else if (nextWordX > wordX && wordW > nextWordX - wordX) {
+            wordW = nextWordX - wordX;
+          }
+        }
+        if (wordW > 0) {
+          renderer.fillRect(wordX, wordY, wordW, wordH, true);
+          renderer.drawText(fontId, wordX, wordY, visibleText, false, textStyle);
         }
         return true;
       });

@@ -291,7 +291,10 @@ searching.
   page.
 - Matches are page-level. Repeating a query skips the rest of the current page,
   so multiple occurrences on one page are not individually navigable.
-- There is no match highlighting or result list.
+- There is no match result list, but the matching page highlights all occurrences of the query.
+- Search match highlighting uses a high-contrast inverted style (solid black background with white/light text) to make matches immediately stand out on the screen.
+- Highlighting is transient and scoped: it is only rendered on the initial search-match result page. Turning the page or navigating away automatically clears the highlight state so it does not persist on subsequent reads.
+- Highlight detection runs at render time by normalizing the current page's visible words (lowercase, hyphens/spaces stripped) and matching them against the normalized query. This guarantees alignment with KMP indexing but adds a minor, one-off CPU and temporary RAM cost during page composition.
 - Case-insensitive matching is ASCII-only. Non-ASCII case variants must match
   exactly.
 - Search text is reconstructed from rendered word tokens with single spaces, so
@@ -353,8 +356,6 @@ heap alone is insufficient to detect fragmentation.
 
 ## Possible future extensions
 
-- Store token/word offsets if exact same-page occurrences and highlighting are
-  worth the extra cache space and rendering complexity.
 - Add compact Unicode case-fold support for languages available on the input
   method, with an explicit flash budget.
 - Make section layout cooperatively cancellable if cold-search latency becomes
