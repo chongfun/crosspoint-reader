@@ -15,19 +15,16 @@
 #include "AsciiCase.h"
 #include "Epub/css/CssParser.h"
 #include "Page.h"
+#include "SectionCacheFormat.h"
 #include "hyphenation/Hyphenator.h"
 #include "parsers/ChapterHtmlSlimParser.h"
 
+// The on-disk format constants (magic, version, header size, page-LUT stride)
+// live in SectionCacheFormat.h so the search scanner shares one definition.
+using namespace epub;
+
 namespace {
-constexpr uint32_t SECTION_CACHE_MAGIC = 0x535843FF;  // bytes: 0xFF, "CXS"
-// v42: page LUT entries include offsets to compact text records used by search.
-constexpr uint8_t SECTION_FILE_VERSION = 42;
 constexpr uint16_t INITIAL_SECTION_PAGE_LUT_ENTRIES = 1024;
-constexpr uint32_t HEADER_SIZE = sizeof(SECTION_CACHE_MAGIC) + sizeof(uint8_t) + sizeof(int) + sizeof(float) +
-                                 sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) +
-                                 sizeof(uint16_t) + sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
-                                 sizeof(bool) + sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t) +
-                                 sizeof(uint32_t) + sizeof(uint32_t);
 
 // The header ends with a fixed trailer written last and patched after layout
 // (see writeSectionFileHeader): a uint16_t pageCount followed by four uint32_t
@@ -86,11 +83,9 @@ struct ScopedSectionFile {
   bool ok() const { return static_cast<bool>(file); }
 };
 
-// On-disk page LUT stride: only pageOffset and searchTextOffset are stored
-// inline; paragraphIndex and listItemIndex are written to separate LUTs.
-constexpr size_t PAGE_LUT_ENTRY_SIZE = sizeof(uint32_t) * 2;
-// Bind the stride to the two inline offset fields so adding or resizing an
-// inline LUT field can't silently desync it from the write/read sites.
+// Bind the on-disk page-LUT stride (PAGE_LUT_ENTRY_SIZE, in SectionCacheFormat.h)
+// to the two inline offset fields so adding or resizing an inline LUT field
+// can't silently desync it from the write/read sites.
 static_assert(PAGE_LUT_ENTRY_SIZE == sizeof(PageLutEntry::fileOffset) + sizeof(PageLutEntry::searchTextOffset),
               "On-disk page-LUT stride must match the inline offset fields");
 }  // namespace
@@ -646,144 +641,8 @@ void Section::resetForSpine(const int newSpineIndex) {
   pageCount = 0;
   currentPage = 0;
 }
-bool Section::ensureSearchHeader() {
-  if (searchHeaderReady) {
-    return true;
-  }
 
-  // Open the member file handle lazily on the first call. It stays open for
-  // all pages in this section; resetForSpine() closes it when advancing.
-  if (!file) {
-    if (!Storage.openFileForRead("SCT", filePath, file)) {
-      return false;
-    }
-  }
-
-  const uint32_t fileSize = file.size();
-  if (fileSize < HEADER_SIZE) {
-    LOG_ERR("SCT", "Search failed: section cache header is truncated");
-    // Release the handle so the corrupt cache can be invalidated/rebuilt; the
-    // next call reopens lazily (searchHeaderReady stays false).
-    closeSearchState();
-    return false;
-  }
-
-  uint32_t lutOffset = 0;
-  if (!readPageLutOffset(lutOffset)) {
-    LOG_ERR("SCT", "Search failed: could not read page LUT offset");
-    closeSearchState();
-    return false;
-  }
-
-  searchFileSize = fileSize;
-  searchLutOffset = lutOffset;
-  searchHeaderReady = true;
-  return true;
-}
-
-Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher) {
-  if (startPage >= pageCount || startPage >= endPage) {
-    return {ScanStatus::NoMatch, -1};
-  }
-  if (endPage > pageCount) {
-    endPage = pageCount;
-  }
-
-  // File size and page-LUT offset are invariant per section; read them once.
-  if (!ensureSearchHeader()) {
-    return {ScanStatus::CorruptCache, -1};
-  }
-  const uint32_t fileSize = searchFileSize;
-  const uint32_t lutOffset = searchLutOffset;
-
-  const uint16_t count = endPage - startPage;
-  const uint64_t entryOffset =
-      static_cast<uint64_t>(lutOffset) + static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * startPage;
-  if (lutOffset == 0 || entryOffset > fileSize ||
-      fileSize - entryOffset < static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * count) {
-    LOG_ERR("SCT", "Search failed: invalid page LUT entry range");
-    closeSearchState();
-    return {ScanStatus::CorruptCache, -1};
-  }
-
-  // Batch read the LUT entries for the requested page range into a reused
-  // buffer, allocated (or grown) once with nothrow ownership so repeated chunked
-  // scans do not churn the heap and an allocation failure is a recoverable
-  // search error rather than an abort.
-  const size_t lutBytes = static_cast<size_t>(count) * PAGE_LUT_ENTRY_SIZE;
-  if (searchLutBufCapacity < lutBytes) {
-    searchLutBuf = makeUniqueNoThrow<uint8_t[]>(lutBytes);
-    if (!searchLutBuf) {
-      searchLutBufCapacity = 0;
-      LOG_ERR("SCT", "Search failed: OOM for page LUT buffer (%u bytes)", static_cast<unsigned>(lutBytes));
-      closeSearchState();
-      return {ScanStatus::IoError, -1};
-    }
-    searchLutBufCapacity = lutBytes;
-  }
-  if (!file.seek(static_cast<size_t>(entryOffset))) {
-    LOG_ERR("SCT", "Search failed: could not seek to page LUT entries");
-    closeSearchState();
-    return {ScanStatus::IoError, -1};
-  }
-  if (file.read(searchLutBuf.get(), lutBytes) != lutBytes) {
-    LOG_ERR("SCT", "Search failed: could not read page LUT entries");
-    closeSearchState();
-    return {ScanStatus::CorruptCache, -1};
-  }
-
-  // Sequentially read the text records
-  std::array<uint8_t, 64> buffer;
-  for (uint16_t i = 0; i < count; i++) {
-    uint32_t searchTextOffset = 0;
-    // searchTextOffset is the 2nd uint32_t in the LUT entry
-    memcpy(&searchTextOffset, searchLutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
-    if (searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
-      LOG_ERR("SCT", "Search failed: invalid text record offset");
-      closeSearchState();
-      return {ScanStatus::CorruptCache, -1};
-    }
-
-    if (!file.seek(searchTextOffset)) {
-      LOG_ERR("SCT", "Search failed: could not seek to text record");
-      closeSearchState();
-      return {ScanStatus::IoError, -1};
-    }
-
-    uint32_t remaining = 0;
-    if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining) ||
-        remaining > fileSize - searchTextOffset - sizeof(uint32_t)) {
-      LOG_ERR("SCT", "Search failed: invalid text record length");
-      closeSearchState();
-      return {ScanStatus::CorruptCache, -1};
-    }
-
-    // A page with no searchable text (e.g. image-only) is a content discontinuity,
-    // so drop any carried partial match rather than bridging across it.
-    if (remaining == 0) {
-      matcher.reset();
-      continue;
-    }
-
-    while (remaining > 0) {
-      const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
-      if (file.read(buffer.data(), chunkSize) != chunkSize) {
-        LOG_ERR("SCT", "Search failed: truncated text record");
-        closeSearchState();
-        return {ScanStatus::CorruptCache, -1};
-      }
-      remaining -= chunkSize;
-
-      for (size_t j = 0; j < chunkSize; ++j) {
-        if (matcher.feed(buffer[j]) > 0) {
-          return {ScanStatus::Match, static_cast<int>(startPage + i)};
-        }
-      }
-    }
-  }
-
-  return {ScanStatus::NoMatch, -1};
-}
+// ensureSearchHeader() and scanForward() are defined in SectionSearch.cpp.
 
 std::optional<uint16_t> Section::getCachedPageCount() {
   ScopedSectionFile sf(file, filePath);

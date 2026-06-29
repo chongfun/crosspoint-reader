@@ -92,8 +92,10 @@ Implementation entry points:
 - reader orchestration: [`EpubReaderActivity.cpp`](../../src/activities/reader/EpubReaderActivity.cpp)
 - on-page highlighting: [`SearchHighlighter.cpp`](../../src/activities/reader/SearchHighlighter.cpp)
 - cooperative scan activity: [`EpubReaderSearchActivity.cpp`](../../src/activities/reader/EpubReaderSearchActivity.cpp)
-- cache creation and streaming matcher: [`Section.cpp`](../../lib/Epub/Epub/Section.cpp)
-- per-page text serialization: [`Page.cpp`](../../lib/Epub/Epub/Page.cpp)
+- cache creation: [`Section.cpp`](../../lib/Epub/Epub/Section.cpp)
+- forward scan over the cache: [`SectionSearch.cpp`](../../lib/Epub/Epub/SectionSearch.cpp) (`Section::scanForward`/`ensureSearchHeader`, split out of `Section.cpp`)
+- per-page text serialization: [`PageSearch.cpp`](../../lib/Epub/Epub/PageSearch.cpp) (`Page::serializeSearchText`, split out of `Page.cpp`)
+- shared on-disk cache layout constants: [`SectionCacheFormat.h`](../../lib/Epub/Epub/SectionCacheFormat.h)
 
 ## Section cache format
 
