@@ -4,8 +4,12 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
+
+#include "Epub/Page.h"
 
 namespace EpubReaderUtils {
 
@@ -130,6 +134,44 @@ inline bool saveProgress(Epub& epub, int spineIndex, int pageNumber, int pageCou
     return false;
   }
   LOG_DBG("ERS", "Progress saved: spine=%d page=%d", spineIndex, pageNumber);
+  return true;
+}
+
+inline bool hasEmSpacePrefix(const std::string& word) {
+  return word.size() >= 3 && word.compare(0, 3, "\xe2\x80\x83") == 0;
+}
+
+template <typename Callback>
+bool forEachVisiblePageWord(const Page& page, Callback&& callback) {
+  uint16_t wordIndex = 0;
+  for (const auto& element : page.elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto& line = static_cast<const PageLine&>(*element);
+    if (!line.getBlock()) continue;
+
+    const auto& block = *line.getBlock();
+    const auto& wordList = block.getWords();
+    const auto& xpos = block.getWordXpos();
+    const auto& styles = block.getWordStyles();
+    const size_t count = std::min({wordList.size(), xpos.size(), styles.size()});
+    for (size_t i = 0; i < count; ++i) {
+      const std::string& word = wordList[i];
+      const char* visibleWord = word.c_str() + (hasEmSpacePrefix(word) ? 3 : 0);
+      bool hasVisibleText = false;
+      for (const char* p = visibleWord; *p != '\0'; ++p) {
+        if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+          hasVisibleText = true;
+          break;
+        }
+      }
+      if (!hasVisibleText) continue;
+
+      if (!callback(wordIndex, line, block, i)) {
+        return false;
+      }
+      wordIndex++;
+    }
+  }
   return true;
 }
 

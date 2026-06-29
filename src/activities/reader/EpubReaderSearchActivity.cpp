@@ -112,7 +112,7 @@ bool EpubReaderSearchActivity::shouldScanWrappedStopContinuation() const {
   // occurrence that crosses the circular route boundary without changing find
   // next's originating-page exclusion.
   return wrapped && route.startPage == route.stopPage && currentSpineIndex == route.startSpineIndex &&
-         currentPage == route.stopPage && matcher.matched > 0;
+         currentPage == route.stopPage && matcher.hasPartialMatch();
 }
 
 void EpubReaderSearchActivity::advanceSpine() {

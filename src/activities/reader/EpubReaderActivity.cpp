@@ -287,42 +287,8 @@ bool advanceClipCursorToToken(const std::string& text, const uint16_t targetInde
 
 bool wordMatchesToken(const std::string& word, const char* token, const size_t tokenLen) {
   if (!token || tokenLen == 0) return false;
-  const char* visibleWord = word.c_str() + (hasEmSpacePrefix(word) ? 3 : 0);
+  const char* visibleWord = word.c_str() + (EpubReaderUtils::hasEmSpacePrefix(word) ? 3 : 0);
   return std::strlen(visibleWord) == tokenLen && std::strncmp(visibleWord, token, tokenLen) == 0;
-}
-
-template <typename Callback>
-bool forEachVisiblePageWord(const Page& page, Callback&& callback) {
-  uint16_t wordIndex = 0;
-  for (const auto& element : page.elements) {
-    if (element->getTag() != TAG_PageLine) continue;
-    const auto& line = static_cast<const PageLine&>(*element);
-    if (!line.getBlock()) continue;
-
-    const auto& block = *line.getBlock();
-    const auto& wordList = block.getWords();
-    const auto& xpos = block.getWordXpos();
-    const auto& styles = block.getWordStyles();
-    const size_t count = std::min({wordList.size(), xpos.size(), styles.size()});
-    for (size_t i = 0; i < count; ++i) {
-      const std::string& word = wordList[i];
-      const char* visibleWord = word.c_str() + (hasEmSpacePrefix(word) ? 3 : 0);
-      bool hasVisibleText = false;
-      for (const char* p = visibleWord; *p != '\0'; ++p) {
-        if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
-          hasVisibleText = true;
-          break;
-        }
-      }
-      if (!hasVisibleText) continue;
-
-      if (!callback(wordIndex, line, block, i)) {
-        return false;
-      }
-      wordIndex++;
-    }
-  }
-  return true;
 }
 
 bool matchClipRunFromPageWord(const Page& page, const Clipping& clipping, const uint16_t startPageWord,
@@ -339,25 +305,26 @@ bool matchClipRunFromPageWord(const Page& page, const Clipping& clipping, const 
   bool reachedClipEnd = false;
   bool stoppedByMismatch = false;
 
-  forEachVisiblePageWord(page, [&](const uint16_t wordIndex, const PageLine&, const TextBlock& block, const size_t i) {
-    if (wordIndex < startPageWord) {
-      return true;
-    }
+  EpubReaderUtils::forEachVisiblePageWord(
+      page, [&](const uint16_t wordIndex, const PageLine&, const TextBlock& block, const size_t i) {
+        if (wordIndex < startPageWord) {
+          return true;
+        }
 
-    const std::string& word = block.getWords()[i];
-    if (!wordMatchesToken(word, token, tokenLen)) {
-      stoppedByMismatch = true;
-      return false;
-    }
+        const std::string& word = block.getWords()[i];
+        if (!wordMatchesToken(word, token, tokenLen)) {
+          stoppedByMismatch = true;
+          return false;
+        }
 
-    matchedTokens++;
-    lastWord = wordIndex;
-    if (!nextClipToken(cursor, token, tokenLen)) {
-      reachedClipEnd = true;
-      return false;
-    }
-    return true;
-  });
+        matchedTokens++;
+        lastWord = wordIndex;
+        if (!nextClipToken(cursor, token, tokenLen)) {
+          reachedClipEnd = true;
+          return false;
+        }
+        return true;
+      });
 
   if (matchedTokens == 0) {
     return false;
@@ -391,32 +358,33 @@ bool findClippingTextOnPage(const Page& page, const Clipping& clipping, Clipping
 
   bool found = false;
 
-  forEachVisiblePageWord(page, [&](const uint16_t wordIndex, const PageLine&, const TextBlock& block, const size_t i) {
-    const std::string& word = block.getWords()[i];
-    const char* cursor = clipping.text.c_str();
-    const char* token = nullptr;
-    size_t tokenLen = 0;
-    uint16_t tokenIndex = 0;
-    while (nextClipToken(cursor, token, tokenLen)) {
-      if (tokenIndex >= tokenCount) {
-        break;
-      }
-      if (wordMatchesToken(word, token, tokenLen) &&
-          matchClipRunFromPageWord(page, clipping, wordIndex, tokenIndex, minPartialMatch, match)) {
-        found = true;
-        return false;
-      }
-      tokenIndex++;
-    }
-    return true;
-  });
+  EpubReaderUtils::forEachVisiblePageWord(
+      page, [&](const uint16_t wordIndex, const PageLine&, const TextBlock& block, const size_t i) {
+        const std::string& word = block.getWords()[i];
+        const char* cursor = clipping.text.c_str();
+        const char* token = nullptr;
+        size_t tokenLen = 0;
+        uint16_t tokenIndex = 0;
+        while (nextClipToken(cursor, token, tokenLen)) {
+          if (tokenIndex >= tokenCount) {
+            break;
+          }
+          if (wordMatchesToken(word, token, tokenLen) &&
+              matchClipRunFromPageWord(page, clipping, wordIndex, tokenIndex, minPartialMatch, match)) {
+            found = true;
+            return false;
+          }
+          tokenIndex++;
+        }
+        return true;
+      });
 
   return found;
 }
 
 uint16_t countVisiblePageWords(const Page& page) {
   uint16_t count = 0;
-  forEachVisiblePageWord(page, [&](const uint16_t, const PageLine&, const TextBlock&, const size_t) {
+  EpubReaderUtils::forEachVisiblePageWord(page, [&](const uint16_t, const PageLine&, const TextBlock&, const size_t) {
     if (count == UINT16_MAX) return false;
     count++;
     return true;
@@ -1700,12 +1668,6 @@ void EpubReaderActivity::onEnter() {
     return;
   }
 
-  // Pre-allocate search highlight buffers to avoid render-path heap churn
-  searchHighlightQuery.reserve(64);
-  searchHighlightPageText.reserve(4096);
-  searchHighlightCharToWordIndex.reserve(4096);
-  searchHighlightMatchRanges.reserve(128);
-
   captureGlobalReaderSettings();
   epub->setupCacheDir();
   loadBookReaderSettings();
@@ -2947,7 +2909,7 @@ void EpubReaderActivity::startClipSelection() {
       const bool newLine = i == 0 || words[i].pageIdx != words[i - 1].pageIdx || words[i].y != words[i - 1].y;
       if (!newLine) continue;
 
-      const bool byEmSpace = hasEmSpacePrefix(words[i].text);
+      const bool byEmSpace = EpubReaderUtils::hasEmSpacePrefix(words[i].text);
       const bool byIndent = !byEmSpace && previousLineFirstIdx >= 0 &&
                             words[i].x > words[previousLineFirstIdx].x + indentThreshold &&
                             !endsWithHyphen(words[i - 1].text);
@@ -4269,7 +4231,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const auto finalizeBufferComposition = [&]() {
     drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
-    drawSearchHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
+    searchHighlighter.drawSearchHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft, section.get(),
+                                           lastSearchQuery.data(), renderer);
     drawPublisherPageMarkers(renderer, *page, orientedMarginTop, contentBottom, foregroundBlack);
   };
 
@@ -4491,7 +4454,7 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
     return false;
   };
 
-  forEachVisiblePageWord(
+  EpubReaderUtils::forEachVisiblePageWord(
       page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
         if (!isHighlightedWord(pageWordIndex)) {
           return true;
@@ -4505,7 +4468,7 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
         }
 
         const std::string& wordText = wordList[i];
-        const bool hasEmSpace = hasEmSpacePrefix(wordText);
+        const bool hasEmSpace = EpubReaderUtils::hasEmSpacePrefix(wordText);
         const char* visibleText = wordText.c_str() + (hasEmSpace ? 3 : 0);
         const auto textStyle = static_cast<EpdFontFamily::Style>(styles[i] & ~EpdFontFamily::UNDERLINE);
         const int skipX = hasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", textStyle) : 0;
@@ -4515,7 +4478,7 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
         const int wordH = renderer.getLineHeight(fontId);
         if (i + 1 < wordList.size() && i + 1 < xpos.size() && i + 1 < styles.size()) {
           const std::string& nextWordText = wordList[i + 1];
-          const bool nextHasEmSpace = hasEmSpacePrefix(nextWordText);
+          const bool nextHasEmSpace = EpubReaderUtils::hasEmSpacePrefix(nextWordText);
           const auto nextTextStyle = static_cast<EpdFontFamily::Style>(styles[i + 1] & ~EpdFontFamily::UNDERLINE);
           const int nextSkipX = nextHasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", nextTextStyle) : 0;
           const int nextWordX = orientedMarginLeft + line.xPos + xpos[i + 1] + nextSkipX;
@@ -4528,114 +4491,6 @@ void EpubReaderActivity::drawClippingHighlights(const Page& page, const int font
         if (wordW > 0) {
           renderer.fillRectDither(wordX, wordY, wordW, wordH, Color::LightGray);
           renderer.drawText(fontId, wordX, wordY, visibleText, foregroundBlack, textStyle);
-        }
-        return true;
-      });
-}
-
-void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId, const int orientedMarginTop,
-                                              const int orientedMarginLeft) const {
-  if (lastSearchQuery[0] == '\0' || !section || currentSpineIndex != lastSearchResultSpine ||
-      section->currentPage != lastSearchResultPage) {
-    return;
-  }
-
-  // 1. Compile the search query once using KMP
-  SearchMatcher matcher;
-  if (!matcher.compile(lastSearchQuery.data())) {
-    return;
-  }
-
-  // 2. Normalize the page text and map characters to word indices
-  searchHighlightPageText.clear();
-  searchHighlightCharToWordIndex.clear();
-
-  forEachVisiblePageWord(
-      page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
-        const std::string& wordText = block.getWords()[i];
-        for (char c : wordText) {
-          if (c == ' ' || c == '-') {
-            continue;
-          }
-          if (searchHighlightPageText.size() >= searchHighlightPageText.capacity() ||
-              searchHighlightCharToWordIndex.size() >= searchHighlightCharToWordIndex.capacity()) {
-            return false;
-          }
-          searchHighlightPageText.push_back((c >= 'A' && c <= 'Z') ? (c + 32) : c);
-          searchHighlightCharToWordIndex.push_back(pageWordIndex);
-        }
-        return true;
-      });
-
-  // 3. Find matches of compiledQuery in normalizedPageText incorporating prior page state
-  searchHighlightMatchRanges.clear();
-  if (section->currentPage > 0) {
-    section->scanForward(std::max(0, section->currentPage - 1), section->currentPage, matcher);
-  }
-
-  for (size_t charIndex = 0; charIndex < searchHighlightPageText.size(); ++charIndex) {
-    int matchBytes = matcher.feed(searchHighlightPageText[charIndex]);
-    if (matchBytes > 0) {
-      size_t startIdx = (charIndex + 1 >= static_cast<size_t>(matchBytes)) ? (charIndex + 1 - matchBytes) : 0;
-      size_t endIdx = charIndex;
-      if (startIdx < searchHighlightCharToWordIndex.size() && endIdx < searchHighlightCharToWordIndex.size()) {
-        if (searchHighlightMatchRanges.size() < searchHighlightMatchRanges.capacity()) {
-          searchHighlightMatchRanges.push_back(
-              {searchHighlightCharToWordIndex[startIdx], searchHighlightCharToWordIndex[endIdx]});
-        }
-      }
-    }
-  }
-
-  if (searchHighlightMatchRanges.empty()) {
-    return;
-  }
-
-  // 4. Highlight matched words on page
-  const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
-  const auto isSearchMatchWord = [this](const uint16_t pageWordIndex) {
-    return std::any_of(
-        searchHighlightMatchRanges.begin(), searchHighlightMatchRanges.end(),
-        [pageWordIndex](const auto& range) { return pageWordIndex >= range.first && pageWordIndex <= range.second; });
-  };
-
-  forEachVisiblePageWord(
-      page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
-        if (!isSearchMatchWord(pageWordIndex)) {
-          return true;
-        }
-
-        const auto& wordList = block.getWords();
-        const auto& xpos = block.getWordXpos();
-        const auto& styles = block.getWordStyles();
-        if (i >= wordList.size() || i >= xpos.size() || i >= styles.size()) {
-          return true;
-        }
-
-        const std::string& wordText = wordList[i];
-        const bool hasEmSpace = hasEmSpacePrefix(wordText);
-        const char* visibleText = wordText.c_str() + (hasEmSpace ? 3 : 0);
-        const auto textStyle = static_cast<EpdFontFamily::Style>(styles[i] & ~EpdFontFamily::UNDERLINE);
-        const int skipX = hasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", textStyle) : 0;
-        const int wordX = orientedMarginLeft + line.xPos + xpos[i] + skipX;
-        const int wordY = orientedMarginTop + line.yPos;
-        int wordW = renderer.getTextAdvanceX(fontId, wordText.c_str(), textStyle) - skipX;
-        const int wordH = renderer.getLineHeight(fontId);
-        if (i + 1 < wordList.size() && i + 1 < xpos.size() && i + 1 < styles.size()) {
-          const std::string& nextWordText = wordList[i + 1];
-          const bool nextHasEmSpace = hasEmSpacePrefix(nextWordText);
-          const auto nextTextStyle = static_cast<EpdFontFamily::Style>(styles[i + 1] & ~EpdFontFamily::UNDERLINE);
-          const int nextSkipX = nextHasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", nextTextStyle) : 0;
-          const int nextWordX = orientedMarginLeft + line.xPos + xpos[i + 1] + nextSkipX;
-          if (isSearchMatchWord(pageWordIndex + 1) && nextWordX > wordX + wordW) {
-            wordW = nextWordX - wordX;
-          } else if (nextWordX > wordX && wordW > nextWordX - wordX) {
-            wordW = nextWordX - wordX;
-          }
-        }
-        if (wordW > 0) {
-          renderer.fillRect(wordX, wordY, wordW, wordH, true);
-          renderer.drawText(fontId, wordX, wordY, visibleText, false, textStyle);
         }
         return true;
       });

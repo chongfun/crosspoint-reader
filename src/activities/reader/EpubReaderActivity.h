@@ -15,6 +15,7 @@
 #include "BookmarkStore.h"
 #include "EpubReaderMenuActivity.h"
 #include "GlobalReadingStats.h"
+#include "SearchHighlighter.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -129,11 +130,7 @@ class EpubReaderActivity final : public Activity {
   std::array<char, Section::MAX_SEARCH_QUERY_BYTES + 1> lastSearchQuery{};
   int lastSearchResultSpine = -1;
   int lastSearchResultPage = -1;
-  // Reusable buffers for search highlighting to avoid render-path allocations
-  mutable std::string searchHighlightQuery;
-  mutable std::string searchHighlightPageText;
-  mutable std::vector<uint16_t> searchHighlightCharToWordIndex;
-  mutable std::vector<std::pair<uint16_t, uint16_t>> searchHighlightMatchRanges;
+  SearchHighlighter searchHighlighter;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).
   bool recentsEntryRemoved = false;
@@ -154,7 +151,6 @@ class EpubReaderActivity final : public Activity {
   void renderContents(std::unique_ptr<Page> page, int fontId, int orientedMarginTop, int orientedMarginRight,
                       int orientedMarginBottom, int orientedMarginLeft);
   void drawClippingHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
-  void drawSearchHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft) const;
   void renderStatusBar() const;
   bool shouldUseFootnotePreview(int targetSpineIndex, const std::string& anchor) const;
   std::string footnotePreviewCacheSuffix(EpubRenderMode renderMode, const std::string& anchor) const;
