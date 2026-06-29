@@ -6,8 +6,6 @@
 #include "AsciiCase.h"
 
 namespace {
-constexpr bool isSearchSeparator(const uint8_t b) { return b == ' ' || b == '-'; }
-
 uint32_t stripLatinDiacritics(uint32_t cp) {
   if (cp >= 'A' && cp <= 'Z') return cp + 32;
 
@@ -92,7 +90,7 @@ size_t SearchMatcher::normalizeSearchQuery(const std::string_view query, std::ar
       uint8_t b = (norm >> shift) & 0xFF;
       if (b == 0) break;
 
-      if (isSearchSeparator(b)) {
+      if (epub::isSearchSeparator(b)) {
         continue;
       }
       if (len >= out.size()) {
@@ -186,7 +184,7 @@ int SearchMatcher::feed(uint8_t c) {
     uint8_t b = (norm >> shift) & 0xFF;
     if (b == 0) break;
 
-    if (isSearchSeparator(b)) {
+    if (epub::isSearchSeparator(b)) {
       if (matched > 0) {
         pendingSeparatorBytes += currentCodepointWidth;
       }

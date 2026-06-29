@@ -82,12 +82,6 @@ constexpr size_t PAGE_LUT_ENTRY_SIZE = sizeof(uint32_t) * 2;
 // inline LUT field can't silently desync it from the write/read sites.
 static_assert(PAGE_LUT_ENTRY_SIZE == sizeof(PageLutEntry::fileOffset) + sizeof(PageLutEntry::searchTextOffset),
               "On-disk page-LUT stride must match the inline offset fields");
-
-// ASCII bytes treated as insignificant during search, dropped from both the
-// query and the scanned record so layout-time hyphenation (a word split across
-// a line break stores "<frag>-" + space + "<frag>") and spacing differences
-// between the query and the rendered text do not block a match.
-constexpr bool isSearchSeparator(const uint8_t b) { return b == ' ' || b == '-'; }
 }  // namespace
 
 uint32_t Section::onPageComplete(std::unique_ptr<Page> page, uint32_t& searchTextOffset) {

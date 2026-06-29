@@ -12,4 +12,9 @@ constexpr uint8_t asciiToLower(const uint8_t value) {
   return (value >= 'A' && value <= 'Z') ? static_cast<uint8_t>(value + ('a' - 'A')) : value;
 }
 
+// Bytes treated as insignificant by in-book search on both the query and the
+// page/record sides: ASCII space and hyphen. Single definition so the query
+// normalizer, the streaming matcher, and the result highlighter agree.
+constexpr bool isSearchSeparator(const uint8_t value) { return value == ' ' || value == '-'; }
+
 }  // namespace epub

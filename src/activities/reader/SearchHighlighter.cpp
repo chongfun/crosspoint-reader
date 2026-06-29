@@ -1,5 +1,6 @@
 #include "SearchHighlighter.h"
 
+#include <Epub/AsciiCase.h>
 #include <Epub/Page.h>
 #include <Epub/SearchMatcher.h>
 #include <Epub/Section.h>
@@ -31,7 +32,7 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
       page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
         const std::string& wordText = block.getWords()[i];
         for (char c : wordText) {
-          if (c == ' ' || c == '-') {
+          if (epub::isSearchSeparator(static_cast<uint8_t>(c))) {
             continue;
           }
           if (searchHighlightPageText.size() >= searchHighlightPageText.capacity() ||
