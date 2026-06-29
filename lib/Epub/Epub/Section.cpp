@@ -780,26 +780,6 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
   return -1;
 }
 
-std::string Section::getTextFromSectionFile() {
-  std::string fullText;
-  auto p = this->loadPageFromSectionFile();
-  if (p) {
-    for (const auto& el : p->elements) {
-      if (el->getTag() == TAG_PageLine) {
-        const auto& line = static_cast<const PageLine&>(*el);
-        if (line.getBlock()) {
-          const auto& words = line.getBlock()->getWords();
-          for (const auto& w : words) {
-            if (!fullText.empty()) fullText += " ";
-            fullText += w;
-          }
-        }
-      }
-    }
-  }
-  return fullText;
-}
-
 std::optional<uint16_t> Section::getCachedPageCount() {
   ScopedSectionFile sf(file, filePath);
   if (!sf.ok()) {

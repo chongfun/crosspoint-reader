@@ -96,7 +96,6 @@ class Section {
                          EpubRenderMode renderMode = EpubRenderMode::CrossInkDefault,
                          SectionBuildOptions buildOptions = {});
   std::unique_ptr<Page> loadPageFromSectionFile();
-  std::string getTextFromSectionFile();
 
   // Get the page count from the section cache file without fully loading it.
   std::optional<uint16_t> getCachedPageCount();
