@@ -74,6 +74,8 @@ The responsibilities are split as follows:
 - `EpubReaderMenuActivity` exposes the existing translated `Search` command.
 - `EpubReaderActivity` owns query history and coordinates the keyboard, search
   activity, reader position, and result popup.
+- `SearchHighlighter` encapsulates the transient on-page text highlighting logic 
+  and manages its own reusable memory buffers to avoid rendering-path allocations.
 - `EpubReaderSearchActivity` is a small state machine that scans one page per
   main-loop iteration and distinguishes `Searching`, `NotFound`, and `Error`.
 - `Page::serializeSearchText()` writes compact searchable text while the page
@@ -87,6 +89,7 @@ reach into SdFat directly.
 Implementation entry points:
 
 - reader orchestration: [`EpubReaderActivity.cpp`](../../src/activities/reader/EpubReaderActivity.cpp)
+- on-page highlighting: [`SearchHighlighter.cpp`](../../src/activities/reader/SearchHighlighter.cpp)
 - cooperative scan activity: [`EpubReaderSearchActivity.cpp`](../../src/activities/reader/EpubReaderSearchActivity.cpp)
 - cache creation and streaming matcher: [`Section.cpp`](../../lib/Epub/Epub/Section.cpp)
 - per-page text serialization: [`Page.cpp`](../../lib/Epub/Epub/Page.cpp)
@@ -143,7 +146,10 @@ The search activity owns one reusable `Section`. `Section::resetForSpine()`
 changes its spine and cache path in place, avoiding a new/delete cycle for each
 chapter. Before the activity is allocated, the reader releases its current
 `Section` and deserialized page graph. This avoids keeping the normal reader
-working set and the search working set live together.
+working set and the search working set live together. Result highlighting is
+delegated to `SearchHighlighter`, which pre-allocates its own reusable vectors
+during `EpubReaderActivity` initialization to avoid heap fragmentation in the
+render loop.
 
 The 12,288-byte LUT reservation is not a new steady-state index. Section layout
 already needs a data-dependent page LUT; reserving 1,024 entries once avoids
