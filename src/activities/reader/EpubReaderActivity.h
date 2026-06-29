@@ -108,12 +108,10 @@ class EpubReaderActivity final : public Activity {
   bool pendingTiltPageTurnFeedback = false;
   bool tiltPageTurnFeedbackEnabled = false;
   unsigned long tiltPageTurnFeedbackShowTime = 0UL;
-  bool pendingRenderModeToast = false;
+  // Once-per-book latches deciding whether the auto render-mode / safe-mode
+  // toast should appear. The visible toast itself is the shared `toast` slot.
   bool renderModeToastShown = false;
-  bool pendingSafeModeToast = false;
   bool safeModeToastShown = false;
-  uint8_t renderModeToastMode = 0;
-  unsigned long renderModeToastShowTime = 0UL;
   int completionTriggerSpineIndex = -1;
   float completionTriggerSpineProgress = 1.0f;
   bool completionPromptQueued = false;
@@ -122,11 +120,15 @@ class EpubReaderActivity final : public Activity {
   bool completionTriggerCrossed = false;
   bool lastAtOrPastCompletionTrigger = false;
 
-  // Transient toast used by the search feature: the text to show (null when hidden)
-  // and when it was shown. The pointer is from tr(), which returns stable storage
-  // in the static i18n string table.
-  const char* transientMessage = nullptr;
-  unsigned long transientMessageTime = 0UL;
+  // Single transient on-screen toast slot, shared by the render-mode, safe-mode,
+  // and search messages. `message` points at tr() storage (stable) or is null
+  // when hidden; auto-dismissed `durationMs` after `showTime` in loop().
+  struct Toast {
+    const char* message = nullptr;
+    unsigned long showTime = 0UL;
+    unsigned long durationMs = 0UL;
+  };
+  Toast toast;
   std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> lastSearchQuery{};
   int lastSearchResultSpine = -1;
   int lastSearchResultPage = -1;
@@ -206,8 +208,8 @@ class EpubReaderActivity final : public Activity {
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
   void launchSearchInput();
   void launchBookSearch(const std::string& query);
-  // Show a transient search toast for READER_MESSAGE_DURATION_MS.
-  void showTransientMessage(const char* message);
+  // Show `message` in the shared transient toast slot for `durationMs`.
+  void showToast(const char* message, unsigned long durationMs);
   void applyOrientation(uint8_t orientation);
   void pageTurn(bool isForwardTurn, const char* source = "unknown");
   float getCurrentBookProgressPercent() const;

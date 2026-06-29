@@ -1819,10 +1819,8 @@ void EpubReaderActivity::loop() {
       return;
     }
   }
-  if ((pendingRenderModeToast || pendingSafeModeToast) &&
-      (millis() - renderModeToastShowTime) >= RENDER_MODE_TOAST_MS) {
-    pendingRenderModeToast = false;
-    pendingSafeModeToast = false;
+  if (toast.message && (millis() - toast.showTime) >= toast.durationMs) {
+    toast.message = nullptr;
     requestUpdate();
     return;
   }
@@ -1876,11 +1874,6 @@ void EpubReaderActivity::loop() {
       pageTurn(true, "auto");
       return;
     }
-  }
-
-  if (transientMessage && (millis() - transientMessageTime) >= ReaderUtils::READER_MESSAGE_DURATION_MS) {
-    transientMessage = nullptr;
-    requestUpdate();
   }
 
   // Long-press Confirm: execute the configured reader action without opening the menu
@@ -3320,7 +3313,7 @@ void EpubReaderActivity::launchSearchInput() {
     if (!SearchMatcher::isValidSearchQuery(query)) {
       // Surface why the search was not accepted (e.g. whitespace/hyphen-only
       // input) instead of silently repainting, which reads as a no-op.
-      showTransientMessage(tr(STR_INVALID_SEARCH_QUERY));
+      showToast(tr(STR_INVALID_SEARCH_QUERY), ReaderUtils::READER_MESSAGE_DURATION_MS);
       resumeReadingPaceTimer("search_invalid");
       requestUpdate();
       return;
@@ -3397,15 +3390,16 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
       cachedChapterTotalPageCount = 0;
       lastSearchResultSpine = match.spineIndex;
       lastSearchResultPage = match.page;
-      showTransientMessage(tr(STR_SEARCH_MATCH_FOUND));
+      showToast(tr(STR_SEARCH_MATCH_FOUND), ReaderUtils::READER_MESSAGE_DURATION_MS);
     }
     resumeReadingPaceTimer("search_return");
   });
 }
 
-void EpubReaderActivity::showTransientMessage(const char* message) {
-  transientMessage = message;
-  transientMessageTime = millis();
+void EpubReaderActivity::showToast(const char* message, const unsigned long durationMs) {
+  toast.message = message;
+  toast.showTime = millis();
+  toast.durationMs = durationMs;
 }
 
 void EpubReaderActivity::showCompletedFeedback(bool isCompleted) {
@@ -3421,22 +3415,18 @@ void EpubReaderActivity::showTiltPageTurnFeedback(bool enabled) {
 }
 
 void EpubReaderActivity::showRenderModeToast(const uint8_t renderMode) {
-  if (normalizeRenderMode(renderMode) == EpubRenderMode::CrossInkDefault) {
+  const EpubRenderMode mode = normalizeRenderMode(renderMode);
+  if (mode == EpubRenderMode::CrossInkDefault) {
     return;
   }
-  renderModeToastMode = normalizeRenderModeRaw(renderMode);
-  pendingRenderModeToast = true;
-  pendingSafeModeToast = false;
   renderModeToastShown = true;
-  renderModeToastShowTime = millis();
+  showToast(labelForRenderModeToast(mode), RENDER_MODE_TOAST_MS);
 }
 
 void EpubReaderActivity::showSafeModeToast() {
-  pendingSafeModeToast = true;
-  pendingRenderModeToast = false;
   safeModeToastShown = true;
-  renderModeToastShown = true;
-  renderModeToastShowTime = millis();
+  renderModeToastShown = true;  // safe mode supersedes the auto render-mode toast
+  showToast(tr(STR_SAFE_MODE), RENDER_MODE_TOAST_MS);
 }
 
 void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
@@ -4221,13 +4211,8 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
     const char* msg = tiltPageTurnFeedbackEnabled ? tr(STR_TILT_TO_TURN_ON) : tr(STR_TILT_TO_TURN_OFF);
     drawToastBuffer(renderer, msg);
   }
-  if (pendingSafeModeToast) {
-    drawToastBuffer(renderer, tr(STR_SAFE_MODE));
-  } else if (pendingRenderModeToast) {
-    drawToastBuffer(renderer, labelForRenderModeToast(normalizeRenderMode(renderModeToastMode)));
-  }
-  if (transientMessage) {
-    drawToastBuffer(renderer, transientMessage);
+  if (toast.message) {
+    drawToastBuffer(renderer, toast.message);
   }
   fcm->logStats("bw_render");
   const auto tBwRender = millis();
