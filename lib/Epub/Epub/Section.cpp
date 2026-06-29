@@ -29,6 +29,17 @@ constexpr uint32_t HEADER_SIZE = sizeof(SECTION_CACHE_MAGIC) + sizeof(uint8_t) +
                                  sizeof(bool) + sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t) +
                                  sizeof(uint32_t) + sizeof(uint32_t);
 
+// The header ends with a fixed trailer written last and patched after layout
+// (see writeSectionFileHeader): a uint16_t pageCount followed by four uint32_t
+// offsets in this order — page LUT, anchor map, paragraph LUT, list-item LUT.
+// Name each field's absolute seek position so readers/patchers don't open-code
+// `HEADER_SIZE - sizeof(uint32_t) * N` arithmetic (and risk an off-by-one).
+constexpr size_t LI_LUT_OFFSET_POS = HEADER_SIZE - sizeof(uint32_t);
+constexpr size_t PARAGRAPH_LUT_OFFSET_POS = HEADER_SIZE - sizeof(uint32_t) * 2;
+constexpr size_t ANCHOR_MAP_OFFSET_POS = HEADER_SIZE - sizeof(uint32_t) * 3;
+constexpr size_t PAGE_LUT_OFFSET_POS = HEADER_SIZE - sizeof(uint32_t) * 4;
+constexpr size_t PAGE_COUNT_POS = PAGE_LUT_OFFSET_POS - sizeof(uint16_t);
+
 struct PageLutEntry {
   uint32_t fileOffset;
   uint32_t searchTextOffset;
@@ -507,10 +518,10 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   }
 
   // Patch header with final pageCount, lutOffset, anchorMapOffset, paragraphLutOffset, and liLutOffset.
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(pageCount)) ||
-      !serialization::tryWritePod(file, pageCount) || !serialization::tryWritePod(file, lutOffset) ||
-      !serialization::tryWritePod(file, anchorMapOffset) || !serialization::tryWritePod(file, paragraphLutOffset) ||
-      !serialization::tryWritePod(file, liLutFileOffset) || !file.sync()) {
+  if (!file.seek(PAGE_COUNT_POS) || !serialization::tryWritePod(file, pageCount) ||
+      !serialization::tryWritePod(file, lutOffset) || !serialization::tryWritePod(file, anchorMapOffset) ||
+      !serialization::tryWritePod(file, paragraphLutOffset) || !serialization::tryWritePod(file, liLutFileOffset) ||
+      !file.sync()) {
     LOG_ERR("SCT", "Failed to finalize section cache");
     file.close();
     Storage.remove(tmpSectionPath.c_str());
@@ -541,7 +552,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
 }
 
 bool Section::readPageLutOffset(uint32_t& lutOffset) {
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 4)) {
+  if (!file.seek(PAGE_LUT_OFFSET_POS)) {
     return false;
   }
   return file.read(reinterpret_cast<uint8_t*>(&lutOffset), sizeof(lutOffset)) == sizeof(lutOffset);
@@ -565,7 +576,7 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
     return nullptr;
   }
 
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t))) {
+  if (!file.seek(PAGE_COUNT_POS)) {
     LOG_ERR("SCT", "Failed to seek to page count");
     return nullptr;
   }
@@ -785,7 +796,7 @@ std::optional<uint16_t> Section::getCachedPageCount() {
     return std::nullopt;
   }
 
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 4 - sizeof(uint16_t))) {
+  if (!file.seek(PAGE_COUNT_POS)) {
     return std::nullopt;
   }
   uint16_t count;
@@ -802,7 +813,7 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) {
   }
 
   const uint32_t fileSize = file.size();
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 3)) {
+  if (!file.seek(ANCHOR_MAP_OFFSET_POS)) {
     return std::nullopt;
   }
   uint32_t anchorMapOffset;
@@ -841,7 +852,7 @@ std::optional<uint16_t> Section::getPageForParagraphIndex(const uint16_t pIndex)
   }
 
   const uint32_t fileSize = file.size();
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 2)) {
+  if (!file.seek(PARAGRAPH_LUT_OFFSET_POS)) {
     return std::nullopt;
   }
   uint32_t paragraphLutOffset;
@@ -890,7 +901,7 @@ std::optional<uint16_t> Section::getParagraphIndexForPage(const uint16_t page) {
   }
 
   const uint32_t fileSize = file.size();
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 2)) {
+  if (!file.seek(PARAGRAPH_LUT_OFFSET_POS)) {
     return std::nullopt;
   }
   uint32_t paragraphLutOffset;
@@ -934,7 +945,7 @@ std::optional<uint16_t> Section::getPageForListItemIndex(const uint16_t liIndex)
   }
 
   const uint32_t fileSize = file.size();
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t))) {
+  if (!file.seek(LI_LUT_OFFSET_POS)) {
     return std::nullopt;
   }
   uint32_t liLutOffset;
@@ -946,7 +957,7 @@ std::optional<uint16_t> Section::getPageForListItemIndex(const uint16_t liIndex)
   }
 
   // The li LUT shares count with the paragraph LUT; read count from paragraphLutOffset
-  if (!file.seek(HEADER_SIZE - sizeof(uint32_t) * 2)) {
+  if (!file.seek(PARAGRAPH_LUT_OFFSET_POS)) {
     return std::nullopt;
   }
   uint32_t paragraphLutOffset;
