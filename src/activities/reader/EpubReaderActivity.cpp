@@ -3330,10 +3330,14 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   }
 
   const int resumePage = section ? section->currentPage : nextPageNumber;
-  const int realSpine =
-      (activeFootnotePreview && footnoteDepth > 0) ? savedPositions[footnoteDepth - 1].spineIndex : currentSpineIndex;
-  const int realPage =
-      (activeFootnotePreview && footnoteDepth > 0) ? savedPositions[footnoteDepth - 1].pageNumber : resumePage;
+  const bool previewingFootnote = activeFootnotePreview && footnoteDepth > 0;
+  const int realSpine = previewingFootnote ? savedPositions[footnoteDepth - 1].spineIndex : currentSpineIndex;
+  const int realPage = previewingFootnote ? savedPositions[footnoteDepth - 1].pageNumber : resumePage;
+  // While previewing a footnote, `section` holds the preview's section, not the
+  // real chapter at realSpine/realPage. It must not count as that chapter being
+  // loaded, or plan() treats the cached page count as stale and skips the
+  // pending page remap for realSpine.
+  const bool realSectionLoaded = section != nullptr && !previewingFootnote;
 
   const bool sameQuery = strcmp(lastSearchQuery.data(), query.c_str()) == 0;
   // Resolve the start spine/page and the fresh-vs-"find next" decision in one
@@ -3341,7 +3345,7 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   // start/stop relationship (a wrap stops before re-examining the originating
   // page; find-next begins one page past it).
   const EpubReaderSearchActivity::SearchRoute route = EpubReaderSearchActivity::SearchRoute::plan(
-      {realSpine, realPage, epub->getSpineItemsCount(), section != nullptr, cachedChapterTotalPageCount,
+      {realSpine, realPage, epub->getSpineItemsCount(), realSectionLoaded, cachedChapterTotalPageCount,
        cachedSpineIndex, sameQuery, lastSearchResultSpine, lastSearchResultPage});
 
   const ReaderViewportLayout viewport = computeReaderViewportLayout(renderer, automaticPageTurnActive);
