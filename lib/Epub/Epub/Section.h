@@ -43,6 +43,13 @@ class Section {
   uint32_t searchFileSize = 0;
   uint32_t searchLutOffset = 0;
 
+  // Reused scratch buffer for batched page-LUT reads in scanForward(). Allocated
+  // once on first use (nothrow) and grown only if a larger page range appears,
+  // so repeated chunked scans do not churn the heap; an OOM is a recoverable
+  // search failure rather than an abort. Freed when the Section is destroyed.
+  std::unique_ptr<uint8_t[]> searchLutBuf;
+  size_t searchLutBufCapacity = 0;
+
   bool writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
                               uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
                               bool hyphenationEnabled, bool embeddedStyle, uint8_t imageRendering,

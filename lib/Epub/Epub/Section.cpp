@@ -701,32 +701,38 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
     return std::nullopt;
   }
 
-  // Batch read the LUT entries for the requested page range
-  std::vector<uint8_t> lutBuf(count * PAGE_LUT_ENTRY_SIZE);
+  // Batch read the LUT entries for the requested page range into a reused
+  // buffer, allocated (or grown) once with nothrow ownership so repeated chunked
+  // scans do not churn the heap and an allocation failure is a recoverable
+  // search error rather than an abort.
+  const size_t lutBytes = static_cast<size_t>(count) * PAGE_LUT_ENTRY_SIZE;
+  if (searchLutBufCapacity < lutBytes) {
+    searchLutBuf = makeUniqueNoThrow<uint8_t[]>(lutBytes);
+    if (!searchLutBuf) {
+      searchLutBufCapacity = 0;
+      LOG_ERR("SCT", "Search failed: OOM for page LUT buffer (%u bytes)", static_cast<unsigned>(lutBytes));
+      closeSearchState();
+      return std::nullopt;
+    }
+    searchLutBufCapacity = lutBytes;
+  }
   if (!file.seek(static_cast<size_t>(entryOffset))) {
     LOG_ERR("SCT", "Search failed: could not seek to page LUT entries");
     closeSearchState();
     return std::nullopt;
   }
-  if (file.read(lutBuf.data(), lutBuf.size()) != lutBuf.size()) {
+  if (file.read(searchLutBuf.get(), lutBytes) != lutBytes) {
     LOG_ERR("SCT", "Search failed: could not read page LUT entries");
     closeSearchState();
     return std::nullopt;
   }
 
-  std::vector<uint32_t> textOffsets;
-  textOffsets.reserve(count);
-  for (uint16_t i = 0; i < count; i++) {
-    uint32_t offset = 0;
-    // searchTextOffset is the 2nd uint32_t in the LUT entry
-    memcpy(&offset, lutBuf.data() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
-    textOffsets.push_back(offset);
-  }
-
   // Sequentially read the text records
   std::array<uint8_t, 64> buffer;
   for (uint16_t i = 0; i < count; i++) {
-    const uint32_t searchTextOffset = textOffsets[i];
+    uint32_t searchTextOffset = 0;
+    // searchTextOffset is the 2nd uint32_t in the LUT entry
+    memcpy(&searchTextOffset, searchLutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
     if (searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record offset");
       closeSearchState();
