@@ -195,6 +195,18 @@ existing substring behavior (a query already matches inside a longer word) and
 favors finding a half-remembered passage — e.g. a location last read on another
 device or in print — over exact-span precision.
 
+Codepoints with no ASCII or Latin folding (CJK, Cyrillic, Greek, unmapped
+symbols, etc.) normalize to nothing and are dropped on **both** sides, exactly
+like spaces and hyphens. So `"a你b"` is treated as `"ab"` on the query side and
+the page side alike, and a search for `"ab"` will match it. This is the same
+fuzzy class as the space/hyphen bridging above, not a separate behavior, and it
+is intentional rather than a missing boundary check. The needle is an ASCII-only
+`uint8_t` array, so an unsupported codepoint can never appear *in* a pattern;
+treating it as a hard boundary instead of dropping it would not make `"a你b"`
+matchable — it would only stop the text `"a你b"` from matching its own exact
+query, regressing search over any non-Latin book. Dropping is therefore the
+least-surprising option available within the ASCII-needle constraint.
+
 The matcher's KMP partial-match length is carried across consecutive pages of
 the same spine, so a query split across a *page* boundary still matches — for
 example a word the layout hyphenated at the foot of one page (`"…inter-"`) and
@@ -205,18 +217,25 @@ page with an empty text record), so it never bridges non-contiguous text. A
 cross-page match is reported on the page where it *completes* (the second page),
 which is where the reader opens.
 
-The return type is `std::optional<bool>`:
+The return type is `Section::ScanResult`, a `Section::ScanStatus` plus a `page`
+index (valid only on `Match`):
 
-- `true`: the page contains the query
-- `false`: the cache record is valid and does not contain the query
-- `std::nullopt`: invalid input, I/O failure, or corrupt/truncated cache data
+- `ScanStatus::Match`: a match was found; `page` holds the page index.
+- `ScanStatus::NoMatch`: the requested range was scanned (or was empty) with no
+  match. The cache is valid.
+- `ScanStatus::CorruptCache`: structurally invalid cache data (bad LUT offset,
+  truncated record, etc.). A rebuild may repair it.
+- `ScanStatus::IoError`: a seek/open failure or OOM. Rebuilding will not help.
 
-This distinction lets an ordinary miss advance to the next page while a cache
-failure moves the activity to its translated error state.
-On the first cache failure in a spine, the activity closes and removes that
-section cache, rebuilds it, restores the matcher state from the start of the
-failed page, and retries once. A second failure removes the cache again and
-surfaces the error rather than entering an unbounded rebuild loop.
+This three-way distinction lets an ordinary `NoMatch` advance to the next page
+while a failure moves the activity to its translated error state, and — crucially
+— it separates *repairable* cache corruption from *transient* I/O failures so the
+caller does not delete a valid cache over a momentary glitch. On the first
+`CorruptCache` in a spine, the activity closes and removes that section cache,
+rebuilds it, restores the matcher state from the start of the failed page, and
+retries once; a second `CorruptCache` removes the cache again and surfaces the
+error rather than entering an unbounded rebuild loop. An `IoError` is surfaced
+without deleting the cache, since a rebuild cannot fix it.
 
 ### Alternatives considered
 
