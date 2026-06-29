@@ -10,6 +10,7 @@
 #include <string>
 
 #include "EpubReaderUtils.h"
+#include "ReaderUtils.h"
 
 void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId, const int orientedMarginTop,
                                              const int orientedMarginLeft, Section* section,
@@ -96,7 +97,12 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
   }
 
   // 4. Highlight matched words on page using the shared geometry helper, with
-  // the search style: a solid inverted fill (white-on-black) so matches stand out.
+  // the search style: a solid inverted fill so matches stand out. "Inverted"
+  // means foreground-on-background swapped relative to body text, so it must
+  // track the theme: black fill + white text in light mode, white fill + black
+  // text in dark mode. Hard-coding black/white made the highlight vanish in dark
+  // mode (black fill on a black page, white text identical to body text).
+  const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
   const auto isSearchMatchWord = [this](const uint16_t pageWordIndex) {
     return std::any_of(
         searchHighlightMatchRanges.begin(), searchHighlightMatchRanges.end(),
@@ -106,8 +112,9 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
   EpubReaderUtils::drawWordHighlights(page, renderer, fontId, orientedMarginTop, orientedMarginLeft, isSearchMatchWord,
                                       [&](const int wordX, const int wordY, const int wordW, const int wordH,
                                           const char* visibleText, const EpdFontFamily::Style textStyle) {
-                                        renderer.fillRect(wordX, wordY, wordW, wordH, true);
-                                        renderer.drawText(fontId, wordX, wordY, visibleText, false, textStyle);
+                                        renderer.fillRect(wordX, wordY, wordW, wordH, foregroundBlack);
+                                        renderer.drawText(fontId, wordX, wordY, visibleText, !foregroundBlack,
+                                                          textStyle);
                                       });
 }
 
