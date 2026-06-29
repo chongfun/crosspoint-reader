@@ -76,8 +76,9 @@ The responsibilities are split as follows:
   activity, reader position, and result popup.
 - `SearchHighlighter` encapsulates the transient on-page text highlighting logic 
   and manages its own reusable memory buffers to avoid rendering-path allocations.
-- `EpubReaderSearchActivity` is a small state machine that scans one page per
-  main-loop iteration and distinguishes `Searching`, `NotFound`, and `Error`.
+- `EpubReaderSearchActivity` is a small state machine whose `scanNextPage()`
+  scan loop scans a bounded chunk of up to 50 pages per main-loop iteration
+  before yielding, and distinguishes `Searching`, `NotFound`, and `Error`.
 - `Page::serializeSearchText()` writes compact searchable text while the page
   already exists during layout.
 - `Section::pageContainsText()` searches one record without deserializing a
@@ -285,9 +286,9 @@ interaction through the same menu command.
 
 Rejected for the initial implementation. The device is single-core, SdFat
 access must remain serialized, and a task would add stack and activity-lifetime
-coordination. The cooperative activity scans one cached page per loop iteration,
-keeps cancellation responsive between pages, and prevents automatic sleep while
-searching.
+coordination. The cooperative activity scans a bounded chunk of up to 50 cached
+pages per loop iteration, keeps cancellation responsive between chunks, and
+prevents automatic sleep while searching.
 
 ## Accepted trade-offs and limitations
 
