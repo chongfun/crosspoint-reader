@@ -168,7 +168,9 @@ bool toggleEpubCompleted(const std::string& fullPath, const std::string& display
     const std::string title = epub.getTitle();
     const std::string author = epub.getAuthor();
     LOG_INF("BookActions", "Moving completed epub: %s -> %s", fullPath.c_str(), dstPath.c_str());
-    if (!Storage.rename(fullPath.c_str(), dstPath.c_str())) {
+    // buildReadFolderDestination returns "" when no free name is available; never
+    // hand rename() an empty target (it would fail or clobber). Treat as a move failure.
+    if (dstPath.empty() || !Storage.rename(fullPath.c_str(), dstPath.c_str())) {
       LOG_ERR("BookActions", "Failed to move book to 'Read' folder");
       snprintf(APP_STATE.pendingAlertTitle, sizeof(APP_STATE.pendingAlertTitle), "%s",
                tr(STR_MOVE_TO_READ_FAILED_TITLE));
