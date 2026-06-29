@@ -8,6 +8,8 @@
 - Search-result highlights no longer briefly paint the wrong words when jumping to a match that lands on the same page number in a different chapter.
 - Jumping to a search match while a footnote preview is open now shows the matched page instead of reopening the footnote preview.
 - Search results now highlight the matched words on the page again; a buffer-allocation guard was skipping the highlighter's setup so no matches were ever marked.
+- Search-result highlights no longer mark the wrong words when the searched term also appears on the previous page.
+- The reader no longer keeps the chapter's cache file open after highlighting a search result, which could block other reads on hardware that allows only one open file at a time.
 
 ## [v1.3.4] - 2026-06-24
 

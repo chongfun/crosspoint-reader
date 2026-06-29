@@ -85,13 +85,18 @@ class Section {
   // false on failure, setting failureStatus to IoError for an open/seek/read
   // failure or CorruptCache for a truncated/malformed header.
   bool ensureSearchHeader(ScanStatus& failureStatus);
-  void closeSearchState();
   // Rewrite filePath's numeric suffix in place for the current spineIndex,
   // reusing the buffer (no per-spine string allocation, no std::to_string).
   void rebuildFilePathForSpine();
 
  public:
   uint16_t pageCount = 0;
+  // Close the lazily-opened scan file and invalidate the cached header. scanForward()
+  // intentionally leaves the file open between chunked scans (resetForSpine() closes
+  // it when advancing spines); a one-shot caller such as the search highlighter, which
+  // primes the matcher on the reader's live Section, must call this afterwards so the
+  // reader does not sit on an open SD handle (only one file may be open at a time on HW).
+  void closeSearchState();
   int currentPage = 0;
 
   explicit Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer,

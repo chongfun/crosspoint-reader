@@ -66,15 +66,22 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
     // 3. Find matches of compiledQuery in normalizedPageText incorporating prior page state
     if (section->currentPage > 0) {
       // Prime the matcher with the previous page so a match that began there and
-      // completes on this page still highlights. If that scan fails it leaves the
-      // matcher mid-feed; reset it so we highlight only matches contained on this
-      // page rather than feeding indeterminate carried state.
+      // completes on this page still highlights. Only NoMatch means we fed the
+      // entire previous page cleanly and the carried partial state is valid at the
+      // page boundary. A Match means scanForward stopped mid-previous-page (its
+      // carried KMP state is not the boundary state and would mis-highlight this
+      // page); CorruptCache/IoError leave the feed indeterminate. Reset in all of
+      // those cases so we highlight only matches contained on this page.
       const Section::ScanResult primeResult =
           section->scanForward(std::max(0, section->currentPage - 1), section->currentPage, matcher);
-      if (primeResult.status == Section::ScanStatus::CorruptCache ||
-          primeResult.status == Section::ScanStatus::IoError) {
+      if (primeResult.status != Section::ScanStatus::NoMatch) {
         matcher.reset();
       }
+      // scanForward leaves the section's cache file open on success; the rest of
+      // this function only reads in-memory buffers, so release the handle now and
+      // do not leave the reader's live section holding an open SD file while it
+      // sits on the result page.
+      section->closeSearchState();
     }
 
     for (size_t charIndex = 0; charIndex < searchHighlightPageText.size(); ++charIndex) {
