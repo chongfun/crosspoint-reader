@@ -17,7 +17,7 @@
 using namespace epub;
 
 bool Section::ensureSearchHeader() {
-  if (searchHeaderReady) {
+  if (searchScan.headerReady) {
     return true;
   }
 
@@ -33,7 +33,7 @@ bool Section::ensureSearchHeader() {
   if (fileSize < HEADER_SIZE) {
     LOG_ERR("SCT", "Search failed: section cache header is truncated");
     // Release the handle so the corrupt cache can be invalidated/rebuilt; the
-    // next call reopens lazily (searchHeaderReady stays false).
+    // next call reopens lazily (headerReady stays false).
     closeSearchState();
     return false;
   }
@@ -45,9 +45,9 @@ bool Section::ensureSearchHeader() {
     return false;
   }
 
-  searchFileSize = fileSize;
-  searchLutOffset = lutOffset;
-  searchHeaderReady = true;
+  searchScan.fileSize = fileSize;
+  searchScan.lutOffset = lutOffset;
+  searchScan.headerReady = true;
   return true;
 }
 
@@ -63,8 +63,8 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
   if (!ensureSearchHeader()) {
     return {ScanStatus::CorruptCache, -1};
   }
-  const uint32_t fileSize = searchFileSize;
-  const uint32_t lutOffset = searchLutOffset;
+  const uint32_t fileSize = searchScan.fileSize;
+  const uint32_t lutOffset = searchScan.lutOffset;
 
   const uint16_t count = endPage - startPage;
   const uint64_t entryOffset =
@@ -81,22 +81,22 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
   // scans do not churn the heap and an allocation failure is a recoverable
   // search error rather than an abort.
   const size_t lutBytes = static_cast<size_t>(count) * PAGE_LUT_ENTRY_SIZE;
-  if (searchLutBufCapacity < lutBytes) {
-    searchLutBuf = makeUniqueNoThrow<uint8_t[]>(lutBytes);
-    if (!searchLutBuf) {
-      searchLutBufCapacity = 0;
+  if (searchScan.lutBufCapacity < lutBytes) {
+    searchScan.lutBuf = makeUniqueNoThrow<uint8_t[]>(lutBytes);
+    if (!searchScan.lutBuf) {
+      searchScan.lutBufCapacity = 0;
       LOG_ERR("SCT", "Search failed: OOM for page LUT buffer (%u bytes)", static_cast<unsigned>(lutBytes));
       closeSearchState();
       return {ScanStatus::IoError, -1};
     }
-    searchLutBufCapacity = lutBytes;
+    searchScan.lutBufCapacity = lutBytes;
   }
   if (!file.seek(static_cast<size_t>(entryOffset))) {
     LOG_ERR("SCT", "Search failed: could not seek to page LUT entries");
     closeSearchState();
     return {ScanStatus::IoError, -1};
   }
-  if (file.read(searchLutBuf.get(), lutBytes) != lutBytes) {
+  if (file.read(searchScan.lutBuf.get(), lutBytes) != lutBytes) {
     LOG_ERR("SCT", "Search failed: could not read page LUT entries");
     closeSearchState();
     return {ScanStatus::CorruptCache, -1};
@@ -107,7 +107,7 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
   for (uint16_t i = 0; i < count; i++) {
     uint32_t searchTextOffset = 0;
     // searchTextOffset is the 2nd uint32_t in the LUT entry
-    memcpy(&searchTextOffset, searchLutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
+    memcpy(&searchTextOffset, searchScan.lutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
     if (searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record offset");
       closeSearchState();

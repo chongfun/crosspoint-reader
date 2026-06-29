@@ -35,20 +35,25 @@ class Section {
 
   std::string cacheSuffix;
 
-  // Cached section-header state for the search scan: the file size and page-LUT
-  // offset are invariant per section, so they are read once when the scan file
-  // is lazily opened and reused for every scanForward() call. Invalidated
-  // by resetForSpine() (which also closes the file).
-  bool searchHeaderReady = false;
-  uint32_t searchFileSize = 0;
-  uint32_t searchLutOffset = 0;
+  // Per-section state for the forward search scan (scanForward(), defined in
+  // SectionSearch.cpp), grouped so the feature adds one member to this class
+  // rather than several interleaved fields. Invalidated by resetForSpine(),
+  // which closes the file via closeSearchState().
+  struct SearchScanState {
+    // The file size and page-LUT offset are invariant per section, so they are
+    // read once when the scan file is lazily opened and reused for every scan.
+    bool headerReady = false;
+    uint32_t fileSize = 0;
+    uint32_t lutOffset = 0;
 
-  // Reused scratch buffer for batched page-LUT reads in scanForward(). Allocated
-  // once on first use (nothrow) and grown only if a larger page range appears,
-  // so repeated chunked scans do not churn the heap; an OOM is a recoverable
-  // search failure rather than an abort. Freed when the Section is destroyed.
-  std::unique_ptr<uint8_t[]> searchLutBuf;
-  size_t searchLutBufCapacity = 0;
+    // Reused scratch buffer for batched page-LUT reads. Allocated once on first
+    // use (nothrow) and grown only if a larger page range appears, so repeated
+    // chunked scans do not churn the heap; an OOM is a recoverable search
+    // failure rather than an abort. Freed when the Section is destroyed.
+    std::unique_ptr<uint8_t[]> lutBuf;
+    size_t lutBufCapacity = 0;
+  };
+  SearchScanState searchScan;
 
   bool writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
                               uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,

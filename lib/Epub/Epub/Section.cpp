@@ -631,7 +631,7 @@ void Section::closeSearchState() {
   if (file) {
     file.close();
   }
-  searchHeaderReady = false;
+  searchScan.headerReady = false;
 }
 
 void Section::resetForSpine(const int newSpineIndex) {
