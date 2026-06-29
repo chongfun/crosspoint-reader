@@ -166,9 +166,11 @@ remeasure them when the implementation or toolchain changes.
 - needs only a prefix table bounded by the 64-byte query limit
 
 ASCII `A-Z` bytes are folded to lowercase during comparison without copying the
-query or page. Other UTF-8 bytes are compared exactly. Rendered EPUB words are
-already NFC-composed by the layout pipeline, but the search path does not
-perform general Unicode normalization or case folding.
+query or page. The matcher also performs lightweight diacritic stripping and multi-character
+folding (e.g., `ß` to `ss`, `æ` to `ae`, `é` to `e`) for Latin characters and common
+typographic ligatures. This is implemented as a sequence of packed logic gates in instruction
+flash, requiring zero RAM overhead. Rendered EPUB words are already NFC-composed by the layout
+pipeline. General full-Unicode normalization is not performed.
 
 ASCII spaces and hyphens are treated as insignificant on both sides:
 `normalizeSearchQuery()` drops them from the query (and the KMP prefix table is
@@ -295,8 +297,7 @@ searching.
 - Search match highlighting uses a high-contrast inverted style (solid black background with white/light text) to make matches immediately stand out on the screen.
 - Highlighting is transient and scoped: it is only rendered on the initial search-match result page. Turning the page or navigating away automatically clears the highlight state so it does not persist on subsequent reads.
 - Highlight detection runs at render time by normalizing the current page's visible words (lowercase, hyphens/spaces stripped) and matching them against the normalized query. This guarantees alignment with KMP indexing but adds a minor, one-off CPU and temporary RAM cost during page composition.
-- Case-insensitive matching is ASCII-only. Non-ASCII case variants must match
-  exactly.
+- Case-insensitive matching and diacritic folding are supported for ASCII and common Latin characters. Characters outside the supported Latin set must match exactly.
 - Search text is reconstructed from rendered word tokens with single spaces, so
   it can differ from the EPUB source in spacing and in words split by layout-time
   hyphenation. Matching ignores ASCII spaces and hyphens and carries match state
@@ -356,8 +357,6 @@ heap alone is insufficient to detect fragmentation.
 
 ## Possible future extensions
 
-- Add compact Unicode case-fold support for languages available on the input
-  method, with an explicit flash budget.
 - Make section layout cooperatively cancellable if cold-search latency becomes
   a usability problem.
 - Reduce per-page seeks during a warm scan. The invariant header state (file
@@ -393,6 +392,5 @@ heap alone is insufficient to detect fragmentation.
     performance- and stability-sensitive code in the project.
   Defer until exact-spacing search is actually wanted; the current normalized
   matching is the better trade for finding a half-remembered passage.
-- Normalize punctuation and Unicode for cross-medium search. Even with
-  space/hyphen folding, curly vs straight quotes, em dash vs hyphen, and NFD vs
-  NFC input can still cause a miss, and case folding is ASCII-only.
+- Normalize punctuation for cross-medium search. Even with space/hyphen folding,
+  curly vs straight quotes and em dash vs hyphen can still cause a miss.
