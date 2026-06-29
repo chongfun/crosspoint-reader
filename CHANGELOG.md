@@ -1,7 +1,9 @@
 # Changelog
+
 ## [Unreleased]
 
 ### Fixed
+
 - Search-result highlights are now readable in dark mode; previously the inverted highlight was drawn black-on-black and disappeared.
 - Search-result highlights no longer briefly paint the wrong words when jumping to a match that lands on the same page number in a different chapter.
 
