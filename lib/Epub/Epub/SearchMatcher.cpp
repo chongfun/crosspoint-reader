@@ -25,8 +25,18 @@ uint32_t stripLatinDiacritics(uint32_t cp) {
   if (cp >= 0x00D9 && cp <= 0x00DC) return 'u';                  // Ù Ú Û Ü
   if (cp == 0x00FD || cp == 0x00FF || cp == 0x00DD) return 'y';  // ý ÿ Ý
 
+  // Multi-character folding (packed into 32-bit uint)
+  if (cp == 0x00DF) return 's' | ('s' << 8);                  // ß -> ss
+  if (cp == 0x00E6 || cp == 0x00C6) return 'a' | ('e' << 8);  // æ Æ -> ae
+  if (cp == 0x0153 || cp == 0x0152) return 'o' | ('e' << 8);  // œ Œ -> oe
+  if (cp == 0xFB00) return 'f' | ('f' << 8);                  // ﬀ -> ff
+  if (cp == 0xFB01) return 'f' | ('i' << 8);                  // ﬁ -> fi
+  if (cp == 0xFB02) return 'f' | ('l' << 8);                  // ﬂ -> fl
+  if (cp == 0xFB03) return 'f' | ('f' << 8) | ('i' << 16);    // ﬃ -> ffi
+  if (cp == 0xFB04) return 'f' | ('f' << 8) | ('l' << 16);    // ﬄ -> ffl
+
   if (cp < 256) return epub::asciiToLower(static_cast<uint8_t>(cp));
-  return cp;
+  return 0;
 }
 }  // namespace
 
@@ -76,16 +86,20 @@ size_t SearchMatcher::normalizeSearchQuery(const std::string_view query, std::ar
     }
 
     uint32_t norm = stripLatinDiacritics(utf8Codepoint);
-    if (norm > 255) continue;  // Pattern only stores 1-byte ASCII chars
+    if (norm == 0) continue;  // Drop characters that don't normalize to ASCII
 
-    const uint8_t b = static_cast<uint8_t>(norm);
-    if (isSearchSeparator(b)) {
-      continue;
+    for (int shift = 0; shift < 32; shift += 8) {
+      uint8_t b = (norm >> shift) & 0xFF;
+      if (b == 0) break;
+
+      if (isSearchSeparator(b)) {
+        continue;
+      }
+      if (len >= out.size()) {
+        break;
+      }
+      out[len++] = b;
     }
-    if (len >= out.size()) {
-      break;
-    }
-    out[len++] = b;
   }
   return len;
 }
@@ -154,44 +168,54 @@ int SearchMatcher::feed(uint8_t c) {
 
   uint32_t norm = stripLatinDiacritics(utf8Codepoint);
 
-  if (norm > 255) {
+  if (norm == 0) {
     return 0;
   }
 
-  if (isSearchSeparator(static_cast<uint8_t>(norm))) {
-    if (matched > 0) {
-      pendingSeparatorBytes += utf8BytesConsumed;
-    }
-    return 0;
-  }
+  int totalWidthReturn = 0;
 
-  const uint8_t value = static_cast<uint8_t>(norm);
+  for (int shift = 0; shift < 32; shift += 8) {
+    uint8_t b = (norm >> shift) & 0xFF;
+    if (b == 0) break;
 
-  while (matched > 0 && value != pattern[matched]) {
-    matched = prefix[matched - 1];
-  }
-
-  if (matched == 0) {
-    pendingSeparatorBytes = 0;
-  }
-
-  uint8_t totalBytesForThisChar = utf8BytesConsumed + pendingSeparatorBytes;
-  pendingSeparatorBytes = 0;
-
-  // Track raw byte width of this valid character in the circular buffer
-  matchByteWidths[widthBufferHead] = totalBytesForThisChar;
-  widthBufferHead = (widthBufferHead + 1) % MAX_QUERY_BYTES;
-  if (value == pattern[matched]) {
-    ++matched;
-    if (matched == length) {
-      int totalWidth = 0;
-      for (size_t i = 0; i < length; ++i) {
-        int index = (widthBufferHead + MAX_QUERY_BYTES - length + i) % MAX_QUERY_BYTES;
-        totalWidth += matchByteWidths[index];
+    if (isSearchSeparator(b)) {
+      if (matched > 0) {
+        pendingSeparatorBytes += utf8BytesConsumed;
       }
+      utf8BytesConsumed = 0;
+      continue;
+    }
+
+    const uint8_t value = b;
+
+    while (matched > 0 && value != pattern[matched]) {
       matched = prefix[matched - 1];
-      return totalWidth;
+    }
+
+    if (matched == 0) {
+      pendingSeparatorBytes = 0;
+    }
+
+    uint8_t totalBytesForThisChar = utf8BytesConsumed + pendingSeparatorBytes;
+    utf8BytesConsumed = 0;
+    pendingSeparatorBytes = 0;
+
+    // Track raw byte width of this valid character in the circular buffer
+    matchByteWidths[widthBufferHead] = totalBytesForThisChar;
+    widthBufferHead = (widthBufferHead + 1) % MAX_QUERY_BYTES;
+    if (value == pattern[matched]) {
+      ++matched;
+      if (matched == length) {
+        int totalWidth = 0;
+        for (size_t i = 0; i < length; ++i) {
+          int index = (widthBufferHead + MAX_QUERY_BYTES - length + i) % MAX_QUERY_BYTES;
+          totalWidth += matchByteWidths[index];
+        }
+        matched = prefix[matched - 1];
+        totalWidthReturn = totalWidth;
+      }
     }
   }
-  return 0;
+
+  return totalWidthReturn;
 }
