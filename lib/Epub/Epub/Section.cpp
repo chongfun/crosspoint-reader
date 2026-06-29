@@ -670,9 +670,9 @@ bool Section::ensureSearchHeader() {
   return true;
 }
 
-std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher) {
+Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher) {
   if (startPage >= pageCount || startPage >= endPage) {
-    return -1;
+    return {ScanStatus::NoMatch, -1};
   }
   if (endPage > pageCount) {
     endPage = pageCount;
@@ -680,7 +680,7 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
 
   // File size and page-LUT offset are invariant per section; read them once.
   if (!ensureSearchHeader()) {
-    return std::nullopt;
+    return {ScanStatus::CorruptCache, -1};
   }
   const uint32_t fileSize = searchFileSize;
   const uint32_t lutOffset = searchLutOffset;
@@ -692,7 +692,7 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
       fileSize - entryOffset < static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * count) {
     LOG_ERR("SCT", "Search failed: invalid page LUT entry range");
     closeSearchState();
-    return std::nullopt;
+    return {ScanStatus::CorruptCache, -1};
   }
 
   // Batch read the LUT entries for the requested page range into a reused
@@ -706,19 +706,19 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
       searchLutBufCapacity = 0;
       LOG_ERR("SCT", "Search failed: OOM for page LUT buffer (%u bytes)", static_cast<unsigned>(lutBytes));
       closeSearchState();
-      return std::nullopt;
+      return {ScanStatus::IoError, -1};
     }
     searchLutBufCapacity = lutBytes;
   }
   if (!file.seek(static_cast<size_t>(entryOffset))) {
     LOG_ERR("SCT", "Search failed: could not seek to page LUT entries");
     closeSearchState();
-    return std::nullopt;
+    return {ScanStatus::IoError, -1};
   }
   if (file.read(searchLutBuf.get(), lutBytes) != lutBytes) {
     LOG_ERR("SCT", "Search failed: could not read page LUT entries");
     closeSearchState();
-    return std::nullopt;
+    return {ScanStatus::CorruptCache, -1};
   }
 
   // Sequentially read the text records
@@ -730,13 +730,13 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
     if (searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record offset");
       closeSearchState();
-      return std::nullopt;
+      return {ScanStatus::CorruptCache, -1};
     }
 
     if (!file.seek(searchTextOffset)) {
       LOG_ERR("SCT", "Search failed: could not seek to text record");
       closeSearchState();
-      return std::nullopt;
+      return {ScanStatus::IoError, -1};
     }
 
     uint32_t remaining = 0;
@@ -744,7 +744,7 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
         remaining > fileSize - searchTextOffset - sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record length");
       closeSearchState();
-      return std::nullopt;
+      return {ScanStatus::CorruptCache, -1};
     }
 
     // A page with no searchable text (e.g. image-only) is a content discontinuity,
@@ -759,19 +759,19 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
       if (file.read(buffer.data(), chunkSize) != chunkSize) {
         LOG_ERR("SCT", "Search failed: truncated text record");
         closeSearchState();
-        return std::nullopt;
+        return {ScanStatus::CorruptCache, -1};
       }
       remaining -= chunkSize;
 
       for (size_t j = 0; j < chunkSize; ++j) {
         if (matcher.feed(buffer[j]) > 0) {
-          return static_cast<int>(startPage + i);
+          return {ScanStatus::Match, static_cast<int>(startPage + i)};
         }
       }
     }
   }
 
-  return -1;
+  return {ScanStatus::NoMatch, -1};
 }
 
 std::optional<uint16_t> Section::getCachedPageCount() {

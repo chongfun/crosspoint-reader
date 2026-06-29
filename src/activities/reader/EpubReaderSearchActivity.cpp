@@ -225,13 +225,20 @@ void EpubReaderSearchActivity::scanNextPage() {
   endPage = std::min<int>(endPage, currentPage + 50);
 
   const SearchMatcher matcherBeforeChunk = matcher;
-  auto match = section.scanForward(currentPage, endPage, matcher);
+  auto result = section.scanForward(currentPage, endPage, matcher);
 
-  if (match == std::nullopt && !sectionCacheRepairAttempted) {
+  // A transient I/O failure or OOM is not corruption: surface the error without
+  // deleting a valid cache or forcing a re-layout that would just fail again.
+  if (result.status == Section::ScanStatus::IoError) {
+    setFailure(SearchState::Error);
+    return;
+  }
+
+  // A structurally corrupt cache can sometimes be repaired by rebuilding once.
+  if (result.status == Section::ScanStatus::CorruptCache && !sectionCacheRepairAttempted) {
     sectionCacheRepairAttempted = true;
     matcher = matcherBeforeChunk;
 
-    // Invalidate corrupt cache
     section.resetForSpine(currentSpineIndex);
     sectionLoaded = false;
     section.clearCache();
@@ -239,11 +246,16 @@ void EpubReaderSearchActivity::scanNextPage() {
     if (!ensureSectionLoaded()) {
       return;
     }
-    match = section.scanForward(currentPage, endPage, matcher);
+    result = section.scanForward(currentPage, endPage, matcher);
+    if (result.status == Section::ScanStatus::IoError) {
+      setFailure(SearchState::Error);
+      return;
+    }
   }
 
-  if (match == std::nullopt) {
-    // Do not leave a version-valid but unreadable cache to fail every future search.
+  if (result.status == Section::ScanStatus::CorruptCache) {
+    // Still corrupt after a rebuild: drop the bad cache and surface the error
+    // rather than entering an unbounded rebuild loop.
     section.resetForSpine(currentSpineIndex);
     sectionLoaded = false;
     section.clearCache();
@@ -251,12 +263,13 @@ void EpubReaderSearchActivity::scanNextPage() {
     return;
   }
 
-  if (*match >= 0) {
-    setResult(ProgressChangeResult{currentSpineIndex, *match});
+  if (result.status == Section::ScanStatus::Match) {
+    setResult(ProgressChangeResult{currentSpineIndex, result.page});
     finish();
     return;
   }
 
+  // NoMatch: advance past the scanned chunk.
   currentPage = endPage;
 }
 

@@ -104,11 +104,26 @@ class Section {
   // allocation. Intended for sequential, book-wide operations such as search.
   void resetForSpine(int newSpineIndex);
 
+  // Why a forward search scan stopped. Distinguishes a structurally corrupt
+  // cache (which rebuilding can repair) from a transient I/O failure or OOM
+  // (which it cannot), so the caller does not delete a valid cache over a
+  // momentary glitch.
+  enum class ScanStatus : uint8_t {
+    Match,         // a match was found; `page` holds the page index
+    NoMatch,       // the requested range was scanned with no match (or was empty)
+    CorruptCache,  // structurally invalid cache data; a rebuild may help
+    IoError,       // seek/open failure or OOM; rebuilding will not help
+  };
+  struct ScanResult {
+    ScanStatus status = ScanStatus::NoMatch;
+    int page = -1;  // valid only when status == Match
+  };
+
   // Search forward through cached section pages from `startPage` up to `endPage`,
-  // batching LUT reads and streaming text records sequentially. Returns the
-  // first page index where `matcher.feed` completes a match, -1 if no match,
-  // or nullopt if a cache error occurs.
-  std::optional<int> scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher);
+  // batching LUT reads and streaming text records sequentially. Returns Match
+  // with the first matching page index, NoMatch when the range is exhausted, or
+  // a failure status distinguishing corrupt-cache from transient I/O.
+  ScanResult scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher);
 
   // Look up the page number for an anchor id from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor);
