@@ -13,7 +13,8 @@
 
 void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId, const int orientedMarginTop,
                                              const int orientedMarginLeft, Section* section,
-                                             const char* lastSearchQuery, GfxRenderer& renderer) const {
+                                             const int currentSpineIndex, const char* lastSearchQuery,
+                                             GfxRenderer& renderer) const {
   if (lastSearchQuery == nullptr || lastSearchQuery[0] == '\0' || !section) {
     return;
   }
@@ -22,10 +23,12 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
   // While the reader sits on the search-result page (status-bar refreshes, etc.)
   // this avoids re-reading the previous page from SD and recompiling the matcher
   // on every frame; we just repaint the cached ranges.
-  const bool cacheHit = searchHighlightComputed && section->currentPage == searchHighlightCachedPage &&
+  const bool cacheHit = searchHighlightComputed && searchHighlightCachedSpine == currentSpineIndex &&
+                        section->currentPage == searchHighlightCachedPage &&
                         searchHighlightCachedQuery == lastSearchQuery;
   if (!cacheHit) {
     searchHighlightComputed = true;
+    searchHighlightCachedSpine = currentSpineIndex;
     searchHighlightCachedPage = section->currentPage;
     searchHighlightCachedQuery = lastSearchQuery;
     searchHighlightMatchRanges.clear();
@@ -125,6 +128,7 @@ void SearchHighlighter::release() {
   searchHighlightMatchRanges.clear();
   searchHighlightMatchRanges.shrink_to_fit();
   searchHighlightComputed = false;
+  searchHighlightCachedSpine = -1;
   searchHighlightCachedPage = -1;
   searchHighlightCachedQuery.clear();
   searchHighlightCachedQuery.shrink_to_fit();

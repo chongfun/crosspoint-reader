@@ -14,8 +14,8 @@ class SearchHighlighter {
   SearchHighlighter() = default;
 
   void drawSearchHighlights(const Page& page, const int fontId, const int orientedMarginTop,
-                            const int orientedMarginLeft, Section* section, const char* lastSearchQuery,
-                            GfxRenderer& renderer) const;
+                            const int orientedMarginLeft, Section* section, const int currentSpineIndex,
+                            const char* lastSearchQuery, GfxRenderer& renderer) const;
 
   // Free the scratch buffers (~12 KB). Called when the on-page highlight is no
   // longer active so a reader who is not viewing a search result does not hold
@@ -30,11 +30,15 @@ class SearchHighlighter {
   mutable std::vector<uint16_t> searchHighlightCharToWordIndex;
   mutable std::vector<std::pair<uint16_t, uint16_t>> searchHighlightMatchRanges;
 
-  // Memo of the (page, query) the cached match ranges were computed for, so
-  // repeated renders of the same search-result page (status-bar refreshes, etc.)
-  // reuse the ranges instead of re-reading the previous page from SD and
-  // recompiling the matcher each frame. Invalidated by release().
+  // Memo of the (spine, page, query) the cached match ranges were computed for,
+  // so repeated renders of the same search-result page (status-bar refreshes,
+  // etc.) reuse the ranges instead of re-reading the previous page from SD and
+  // recompiling the matcher each frame. The spine must be part of the key: the
+  // same page number can recur in a different spine (e.g. "find next" landing on
+  // the same page index of another chapter), and keying on page+query alone
+  // would repaint the prior spine's ranges. Invalidated by release().
   mutable bool searchHighlightComputed = false;
+  mutable int searchHighlightCachedSpine = -1;
   mutable int searchHighlightCachedPage = -1;
   mutable std::string searchHighlightCachedQuery;
 };

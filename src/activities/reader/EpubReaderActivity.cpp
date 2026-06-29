@@ -4164,7 +4164,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
     const char* activeSearchQuery =
         (lastSearchResultSpine != -1 && lastSearchResultPage != -1) ? lastSearchQuery.data() : nullptr;
     searchHighlighter.drawSearchHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft, section.get(),
-                                           activeSearchQuery, renderer);
+                                           currentSpineIndex, activeSearchQuery, renderer);
     drawPublisherPageMarkers(renderer, *page, orientedMarginTop, contentBottom, foregroundBlack);
   };
 

@@ -1,4 +1,9 @@
 # Changelog
+## [Unreleased]
+
+### Fixed
+- Search-result highlights no longer briefly paint the wrong words when jumping to a match that lands on the same page number in a different chapter.
+
 ## [v1.3.4] - 2026-06-24
 
 ### Added
