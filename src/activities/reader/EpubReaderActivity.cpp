@@ -4569,7 +4569,9 @@ void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId
 
   // 3. Find matches of compiledQuery in normalizedPageText incorporating prior page state
   searchHighlightMatchRanges.clear();
-  section->scanForward(0, section->currentPage, matcher);
+  if (section->currentPage > 0) {
+    section->scanForward(std::max(0, section->currentPage - 1), section->currentPage, matcher);
+  }
 
   for (size_t charIndex = 0; charIndex < searchHighlightPageText.size(); ++charIndex) {
     if (matcher.feed(searchHighlightPageText[charIndex])) {
