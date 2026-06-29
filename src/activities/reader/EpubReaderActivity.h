@@ -127,7 +127,7 @@ class EpubReaderActivity final : public Activity {
   // in the static i18n string table.
   const char* transientMessage = nullptr;
   unsigned long transientMessageTime = 0UL;
-  std::array<char, Section::MAX_SEARCH_QUERY_BYTES + 1> lastSearchQuery{};
+  std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> lastSearchQuery{};
   int lastSearchResultSpine = -1;
   int lastSearchResultPage = -1;
   SearchHighlighter searchHighlighter;

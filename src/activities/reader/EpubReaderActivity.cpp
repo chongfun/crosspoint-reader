@@ -3362,7 +3362,7 @@ void EpubReaderActivity::launchSearchInput() {
   // The activity allocation is one-shot and owned by ActivityManager; the
   // 64-byte limit bounds its internal query string.
   auto keyboard = makeUniqueNoThrow<KeyboardEntryActivity>(
-      renderer, mappedInput, tr(STR_SEARCH), lastSearchQuery.data(), Section::MAX_SEARCH_QUERY_BYTES, InputType::Text);
+      renderer, mappedInput, tr(STR_SEARCH), lastSearchQuery.data(), SearchMatcher::MAX_QUERY_BYTES, InputType::Text);
   if (!keyboard) {
     LOG_ERR("ERS", "OOM: KeyboardEntryActivity (%u bytes)", static_cast<unsigned>(sizeof(KeyboardEntryActivity)));
     requestUpdate();

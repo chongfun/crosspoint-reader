@@ -68,7 +68,6 @@ class Section {
   void rebuildFilePathForSpine();
 
  public:
-  static constexpr size_t MAX_SEARCH_QUERY_BYTES = 64;
   uint16_t pageCount = 0;
   int currentPage = 0;
 
