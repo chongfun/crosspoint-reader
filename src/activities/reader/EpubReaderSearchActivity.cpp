@@ -54,14 +54,21 @@ EpubReaderSearchActivity::EpubReaderSearchActivity(GfxRenderer& renderer, Mapped
       currentPage(route.startPage),
       viewportWidth(viewportWidth),
       viewportHeight(viewportHeight) {
+  bool ok = false;
   if (query) {
-    strncpy(this->query.data(), query, this->query.size() - 1);
-    this->query[this->query.size() - 1] = '\0';
+    const size_t len = strlen(query);
+    if (len <= SearchMatcher::MAX_QUERY_BYTES) {
+      strncpy(this->query.data(), query, this->query.size() - 1);
+      this->query[this->query.size() - 1] = '\0';
+      if (matcher.compile(this->query.data())) {
+        ok = true;
+      }
+    }
   }
   // Compile the query once here; every page scan reuses the pattern + table. A
   // rejected query (empty/oversized, or only separators) means there is nothing
   // to scan, so fail closed rather than relying solely on the caller's gate.
-  if (!matcher.compile(this->query.data())) {
+  if (!ok) {
     state = SearchState::NotFound;
   }
 }
