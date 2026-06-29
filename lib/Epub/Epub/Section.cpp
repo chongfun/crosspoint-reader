@@ -733,7 +733,10 @@ std::optional<uint16_t> Section::getPageForParagraphIndex(const uint16_t pIndex)
     return std::nullopt;
   }
 
-  const uint32_t lutEnd = paragraphLutOffset + sizeof(uint16_t) + count * sizeof(uint16_t);
+  // Compute in 64-bit so a corrupt (huge) offset cannot wrap the sum into a
+  // small in-bounds value before the bounds check (mirrors the page/search LUT).
+  const uint64_t lutEnd =
+      static_cast<uint64_t>(paragraphLutOffset) + sizeof(uint16_t) + static_cast<uint64_t>(count) * sizeof(uint16_t);
   if (lutEnd > fileSize) {
     return std::nullopt;
   }
@@ -782,7 +785,9 @@ std::optional<uint16_t> Section::getParagraphIndexForPage(const uint16_t page) {
     return std::nullopt;
   }
 
-  const uint32_t entryEnd = paragraphLutOffset + sizeof(uint16_t) + (page + 1) * sizeof(uint16_t);
+  // 64-bit arithmetic so a corrupt offset cannot wrap before the bounds check.
+  const uint64_t entryEnd =
+      static_cast<uint64_t>(paragraphLutOffset) + sizeof(uint16_t) + static_cast<uint64_t>(page + 1) * sizeof(uint16_t);
   if (entryEnd > fileSize) {
     return std::nullopt;
   }
@@ -838,7 +843,8 @@ std::optional<uint16_t> Section::getPageForListItemIndex(const uint16_t liIndex)
     return std::nullopt;
   }
 
-  const uint32_t lutEnd = liLutOffset + count * sizeof(uint16_t);
+  // 64-bit arithmetic so a corrupt offset cannot wrap before the bounds check.
+  const uint64_t lutEnd = static_cast<uint64_t>(liLutOffset) + static_cast<uint64_t>(count) * sizeof(uint16_t);
   if (lutEnd > fileSize) {
     return std::nullopt;
   }
