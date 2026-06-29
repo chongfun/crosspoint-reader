@@ -69,51 +69,18 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
     return;
   }
 
-  // 4. Highlight matched words on page
+  // 4. Highlight matched words on page using the shared geometry helper, with
+  // the search style: a solid inverted fill (white-on-black) so matches stand out.
   const auto isSearchMatchWord = [this](const uint16_t pageWordIndex) {
     return std::any_of(
         searchHighlightMatchRanges.begin(), searchHighlightMatchRanges.end(),
         [pageWordIndex](const auto& range) { return pageWordIndex >= range.first && pageWordIndex <= range.second; });
   };
 
-  EpubReaderUtils::forEachVisiblePageWord(
-      page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
-        if (!isSearchMatchWord(pageWordIndex)) {
-          return true;
-        }
-
-        const auto& wordList = block.getWords();
-        const auto& xpos = block.getWordXpos();
-        const auto& styles = block.getWordStyles();
-        if (i >= wordList.size() || i >= xpos.size() || i >= styles.size()) {
-          return true;
-        }
-
-        const std::string& wordText = wordList[i];
-        const bool hasEmSpace = EpubReaderUtils::hasEmSpacePrefix(wordText);
-        const char* visibleText = wordText.c_str() + (hasEmSpace ? 3 : 0);
-        const auto textStyle = static_cast<EpdFontFamily::Style>(styles[i] & ~EpdFontFamily::UNDERLINE);
-        const int skipX = hasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", textStyle) : 0;
-        const int wordX = orientedMarginLeft + line.xPos + xpos[i] + skipX;
-        const int wordY = orientedMarginTop + line.yPos;
-        int wordW = renderer.getTextAdvanceX(fontId, wordText.c_str(), textStyle) - skipX;
-        const int wordH = renderer.getLineHeight(fontId);
-        if (i + 1 < wordList.size() && i + 1 < xpos.size() && i + 1 < styles.size()) {
-          const std::string& nextWordText = wordList[i + 1];
-          const bool nextHasEmSpace = EpubReaderUtils::hasEmSpacePrefix(nextWordText);
-          const auto nextTextStyle = static_cast<EpdFontFamily::Style>(styles[i + 1] & ~EpdFontFamily::UNDERLINE);
-          const int nextSkipX = nextHasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", nextTextStyle) : 0;
-          const int nextWordX = orientedMarginLeft + line.xPos + xpos[i + 1] + nextSkipX;
-          if (isSearchMatchWord(pageWordIndex + 1) && nextWordX > wordX + wordW) {
-            wordW = nextWordX - wordX;
-          } else if (nextWordX > wordX && wordW > nextWordX - wordX) {
-            wordW = nextWordX - wordX;
-          }
-        }
-        if (wordW > 0) {
-          renderer.fillRect(wordX, wordY, wordW, wordH, true);
-          renderer.drawText(fontId, wordX, wordY, visibleText, false, textStyle);
-        }
-        return true;
-      });
+  EpubReaderUtils::drawWordHighlights(page, renderer, fontId, orientedMarginTop, orientedMarginLeft, isSearchMatchWord,
+                                      [&](const int wordX, const int wordY, const int wordW, const int wordH,
+                                          const char* visibleText, const EpdFontFamily::Style textStyle) {
+                                        renderer.fillRect(wordX, wordY, wordW, wordH, true);
+                                        renderer.drawText(fontId, wordX, wordY, visibleText, false, textStyle);
+                                      });
 }

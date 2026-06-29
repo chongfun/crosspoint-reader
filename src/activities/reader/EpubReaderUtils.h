@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Epub.h>
+#include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -173,6 +174,57 @@ bool forEachVisiblePageWord(const Page& page, Callback&& callback) {
     }
   }
   return true;
+}
+
+// Paint a per-word highlight over every visible word for which `isHighlighted`
+// returns true. Owns the shared geometry — em-space prefix offset and the
+// next-word width extension that closes the gap between adjacent highlighted
+// words — so the search and clipping highlighters cannot drift apart. `drawWord`
+// receives the computed rectangle plus the visible text/style and performs the
+// fill and text draw in its own style. Templated (not std::function) to stay
+// allocation-free on the render path.
+template <typename MatchPred, typename DrawWord>
+void drawWordHighlights(const Page& page, GfxRenderer& renderer, const int fontId, const int orientedMarginTop,
+                        const int orientedMarginLeft, MatchPred&& isHighlighted, DrawWord&& drawWord) {
+  forEachVisiblePageWord(
+      page, [&](const uint16_t pageWordIndex, const PageLine& line, const TextBlock& block, const size_t i) {
+        if (!isHighlighted(pageWordIndex)) {
+          return true;
+        }
+
+        const auto& wordList = block.getWords();
+        const auto& xpos = block.getWordXpos();
+        const auto& styles = block.getWordStyles();
+        if (i >= wordList.size() || i >= xpos.size() || i >= styles.size()) {
+          return true;
+        }
+
+        const std::string& wordText = wordList[i];
+        const bool hasEmSpace = hasEmSpacePrefix(wordText);
+        const char* visibleText = wordText.c_str() + (hasEmSpace ? 3 : 0);
+        const auto textStyle = static_cast<EpdFontFamily::Style>(styles[i] & ~EpdFontFamily::UNDERLINE);
+        const int skipX = hasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", textStyle) : 0;
+        const int wordX = orientedMarginLeft + line.xPos + xpos[i] + skipX;
+        const int wordY = orientedMarginTop + line.yPos;
+        int wordW = renderer.getTextAdvanceX(fontId, wordText.c_str(), textStyle) - skipX;
+        const int wordH = renderer.getLineHeight(fontId);
+        if (i + 1 < wordList.size() && i + 1 < xpos.size() && i + 1 < styles.size()) {
+          const std::string& nextWordText = wordList[i + 1];
+          const bool nextHasEmSpace = hasEmSpacePrefix(nextWordText);
+          const auto nextTextStyle = static_cast<EpdFontFamily::Style>(styles[i + 1] & ~EpdFontFamily::UNDERLINE);
+          const int nextSkipX = nextHasEmSpace ? renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", nextTextStyle) : 0;
+          const int nextWordX = orientedMarginLeft + line.xPos + xpos[i + 1] + nextSkipX;
+          if (isHighlighted(pageWordIndex + 1) && nextWordX > wordX + wordW) {
+            wordW = nextWordX - wordX;
+          } else if (nextWordX > wordX && wordW > nextWordX - wordX) {
+            wordW = nextWordX - wordX;
+          }
+        }
+        if (wordW > 0) {
+          drawWord(wordX, wordY, wordW, wordH, visibleText, textStyle);
+        }
+        return true;
+      });
 }
 
 }  // namespace EpubReaderUtils
