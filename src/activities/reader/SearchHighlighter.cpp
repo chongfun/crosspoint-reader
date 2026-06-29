@@ -119,12 +119,20 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
 }
 
 void SearchHighlighter::ensureBuffersReserved() const {
-  if (searchHighlightPageText.capacity() > 0) {
+  constexpr size_t PAGE_TEXT_CAPACITY = 4096;
+  constexpr size_t MATCH_RANGES_CAPACITY = 128;
+  // Gate on the char->word vector, not searchHighlightPageText: the latter is a
+  // std::string whose capacity() is never 0 (small-string optimization keeps ~15
+  // bytes inline), so using it as the "already reserved" sentinel would skip the
+  // reserve on the first call, leaving the vectors at capacity 0 and tripping the
+  // build loop's capacity guard on the very first character (empty page text ->
+  // no highlight). The vector's capacity is genuinely 0 until reserved.
+  if (searchHighlightCharToWordIndex.capacity() >= PAGE_TEXT_CAPACITY) {
     return;
   }
-  searchHighlightPageText.reserve(4096);
-  searchHighlightCharToWordIndex.reserve(4096);
-  searchHighlightMatchRanges.reserve(128);
+  searchHighlightPageText.reserve(PAGE_TEXT_CAPACITY);
+  searchHighlightCharToWordIndex.reserve(PAGE_TEXT_CAPACITY);
+  searchHighlightMatchRanges.reserve(MATCH_RANGES_CAPACITY);
 }
 
 void SearchHighlighter::release() {

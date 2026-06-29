@@ -7,6 +7,7 @@
 - Search-result highlights are now readable in dark mode; previously the inverted highlight was drawn black-on-black and disappeared.
 - Search-result highlights no longer briefly paint the wrong words when jumping to a match that lands on the same page number in a different chapter.
 - Jumping to a search match while a footnote preview is open now shows the matched page instead of reopening the footnote preview.
+- Search results now highlight the matched words on the page again; a buffer-allocation guard was skipping the highlighter's setup so no matches were ever marked.
 
 ## [v1.3.4] - 2026-06-24
 
