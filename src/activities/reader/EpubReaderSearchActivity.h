@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Epub.h>
+#include <Epub/SearchMatcher.h>
 #include <Epub/Section.h>
 
 #include <array>
@@ -50,10 +51,8 @@ class EpubReaderSearchActivity final : public Activity {
 
   std::shared_ptr<Epub> epub;
   Section section;
-  std::array<char, Section::MAX_SEARCH_QUERY_BYTES + 1> query{};
-  // `query` compiled once in the constructor (normalized pattern + KMP table)
-  // and reused for every page scan instead of being rebuilt per page.
-  Section::CompiledSearchQuery compiledQuery{};
+  std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> query{};
+  SearchMatcher matcher;
   SearchRoute route;
   int currentSpineIndex;
   int currentPage;
@@ -63,11 +62,7 @@ class EpubReaderSearchActivity final : public Activity {
   bool sectionLoaded = false;
   bool sectionCacheRepairAttempted = false;
   bool wrapped = false;
-  // KMP partial-match length carried across consecutive pages of the same spine
-  // so a query split across a page boundary (line-hyphenated word, or a phrase)
-  // still matches. Reset at every reading-order discontinuity: scan start (0
-  // init), spine change (advanceSpine), and the wrap.
-  size_t scanMatched = 0;
+
   // Last progress percentage painted to the panel. Repaints are gated on this
   // changing so the e-ink panel is not refreshed per page. Starts at 0 because
   // onEnter() paints the initial 0% screen before the scan begins.
@@ -80,9 +75,8 @@ class EpubReaderSearchActivity final : public Activity {
   float scanStartPos = -1.0f;
   float scanRouteLength = 0.0f;
 
-  bool preparePage();
-  bool loadCurrentSection();
-  bool invalidateCurrentSectionCache();
+  bool advanceSpineIfNeeded();
+  bool ensureSectionLoaded();
   bool reachedWrappedStop() const;
   bool shouldScanWrappedStopContinuation() const;
   void advanceSpine();

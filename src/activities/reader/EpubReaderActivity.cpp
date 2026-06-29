@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Epub/Page.h>
+#include <Epub/SearchMatcher.h>
 #include <Epub/blocks/TextBlock.h>
 #include <FontCacheManager.h>
 #include <FsHelpers.h>
@@ -3415,7 +3416,7 @@ void EpubReaderActivity::launchSearchInput() {
     }
 
     const auto& query = std::get<KeyboardResult>(result.data).text;
-    if (!Section::isValidSearchQuery(query)) {
+    if (!SearchMatcher::isValidSearchQuery(query)) {
       // Surface why the search was not accepted (e.g. whitespace/hyphen-only
       // input) instead of silently repainting, which reads as a no-op.
       showTransientMessage(tr(STR_INVALID_SEARCH_QUERY));
@@ -4540,8 +4541,8 @@ void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId
   }
 
   // 1. Compile the search query once using KMP
-  Section::CompiledSearchQuery compiledQuery{};
-  if (!Section::compileSearchQuery(lastSearchQuery.data(), compiledQuery)) {
+  SearchMatcher matcher;
+  if (!matcher.compile(lastSearchQuery.data())) {
     return;
   }
 
@@ -4568,29 +4569,17 @@ void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId
 
   // 3. Find matches of compiledQuery in normalizedPageText incorporating prior page state
   searchHighlightMatchRanges.clear();
-  size_t carryMatched = 0;
-  for (uint16_t p = 0; p < section->currentPage; ++p) {
-    section->pageContainsText(p, compiledQuery, carryMatched);
-  }
+  section->scanForward(0, section->currentPage, matcher);
 
-  size_t matched = carryMatched;
   for (size_t charIndex = 0; charIndex < searchHighlightPageText.size(); ++charIndex) {
-    const uint8_t value = searchHighlightPageText[charIndex];
-    while (matched > 0 && value != compiledQuery.pattern[matched]) {
-      matched = compiledQuery.prefix[matched - 1];
-    }
-    if (value == compiledQuery.pattern[matched]) {
-      ++matched;
-      if (matched == compiledQuery.length) {
-        size_t startIdx = (charIndex + 1 >= matched) ? (charIndex + 1 - matched) : 0;
-        size_t endIdx = charIndex;
-        if (startIdx < searchHighlightCharToWordIndex.size() && endIdx < searchHighlightCharToWordIndex.size()) {
-          if (searchHighlightMatchRanges.size() < searchHighlightMatchRanges.capacity()) {
-            searchHighlightMatchRanges.push_back(
-                {searchHighlightCharToWordIndex[startIdx], searchHighlightCharToWordIndex[endIdx]});
-          }
+    if (matcher.feed(searchHighlightPageText[charIndex])) {
+      size_t startIdx = (charIndex + 1 >= matcher.length) ? (charIndex + 1 - matcher.length) : 0;
+      size_t endIdx = charIndex;
+      if (startIdx < searchHighlightCharToWordIndex.size() && endIdx < searchHighlightCharToWordIndex.size()) {
+        if (searchHighlightMatchRanges.size() < searchHighlightMatchRanges.capacity()) {
+          searchHighlightMatchRanges.push_back(
+              {searchHighlightCharToWordIndex[startIdx], searchHighlightCharToWordIndex[endIdx]});
         }
-        matched = compiledQuery.prefix[matched - 1];
       }
     }
   }

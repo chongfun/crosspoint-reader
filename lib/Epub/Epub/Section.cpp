@@ -669,66 +669,12 @@ bool Section::ensureSearchHeader() {
   return true;
 }
 
-bool Section::isValidSearchQuery(const std::string_view query) {
-  if (query.empty() || query.size() > MAX_SEARCH_QUERY_BYTES) {
-    return false;
+std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher) {
+  if (startPage >= pageCount || startPage >= endPage) {
+    return -1;
   }
-  // Require at least one byte that survives normalization. The matcher ignores
-  // ASCII spaces and hyphens (see normalizeSearchQuery), so a query of only
-  // whitespace and/or hyphens normalizes to nothing and can never match; the UI
-  // gate must agree with the matcher on what is searchable.
-  return std::any_of(query.begin(), query.end(),
-                     [](const unsigned char value) { return std::isspace(value) == 0 && !isSearchSeparator(value); });
-}
-
-size_t Section::normalizeSearchQuery(const std::string_view query, std::array<uint8_t, MAX_SEARCH_QUERY_BYTES>& out) {
-  size_t len = 0;
-  for (const char c : query) {
-    const uint8_t b = static_cast<uint8_t>(c);
-    if (isSearchSeparator(b)) {
-      continue;
-    }
-    if (len >= out.size()) {
-      break;  // defensive; callers reject query.size() > MAX_SEARCH_QUERY_BYTES
-    }
-    out[len++] = epub::asciiToLower(b);
-  }
-  return len;
-}
-
-bool Section::compileSearchQuery(const std::string_view query, CompiledSearchQuery& out) {
-  // Leave the result in a defined (zeroed, length 0) state even on rejection, so
-  // a caller that ignores the return value never matches against stale bytes.
-  out = CompiledSearchQuery{};
-  // One validity definition (empty / oversized / no searchable byte) shared with
-  // the UI gate; a query that passes always normalizes to a non-empty pattern.
-  if (!isValidSearchQuery(query)) {
-    return false;
-  }
-
-  // Normalize once (lowercase, spaces/hyphens dropped); the KMP table is built
-  // over that same pattern, so pattern and prefix can never disagree.
-  out.length = normalizeSearchQuery(query, out.pattern);
-
-  for (size_t i = 1, matched = 0; i < out.length; ++i) {
-    const uint8_t value = out.pattern[i];
-    while (matched > 0 && value != out.pattern[matched]) {
-      matched = out.prefix[matched - 1];
-    }
-    if (value == out.pattern[matched]) {
-      ++matched;
-    }
-    out.prefix[i] = static_cast<uint8_t>(matched);
-  }
-  return true;
-}
-
-std::optional<bool> Section::pageContainsText(const uint16_t page, const CompiledSearchQuery& query, size_t& matched) {
-  if (query.length == 0 || page >= pageCount) {
-    LOG_ERR("SCT", "Invalid page search request (page=%u count=%u patternLen=%u)", page, pageCount,
-            static_cast<unsigned>(query.length));
-    closeSearchState();
-    return std::nullopt;
+  if (endPage > pageCount) {
+    endPage = pageCount;
   }
 
   // File size and page-LUT offset are invariant per section; read them once.
@@ -738,84 +684,87 @@ std::optional<bool> Section::pageContainsText(const uint16_t page, const Compile
   const uint32_t fileSize = searchFileSize;
   const uint32_t lutOffset = searchLutOffset;
 
-  // Compute in 64-bit so a corrupt (huge) lutOffset cannot wrap the uint32 sum
-  // into a small in-bounds value that slips past the fileSize bounds check.
-  const uint64_t entryOffset = static_cast<uint64_t>(lutOffset) + static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * page;
-  if (lutOffset == 0 || entryOffset > fileSize || fileSize - entryOffset < PAGE_LUT_ENTRY_SIZE) {
-    LOG_ERR("SCT", "Search failed: invalid page LUT entry");
+  const uint16_t count = endPage - startPage;
+  const uint64_t entryOffset =
+      static_cast<uint64_t>(lutOffset) + static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * startPage;
+  if (lutOffset == 0 || entryOffset > fileSize ||
+      fileSize - entryOffset < static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * count) {
+    LOG_ERR("SCT", "Search failed: invalid page LUT entry range");
     closeSearchState();
     return std::nullopt;
   }
 
-  if (!file.seek(static_cast<size_t>(entryOffset) + sizeof(uint32_t))) {
-    LOG_ERR("SCT", "Search failed: could not seek to page LUT entry");
+  // Batch read the LUT entries for the requested page range
+  std::vector<uint8_t> lutBuf(count * PAGE_LUT_ENTRY_SIZE);
+  if (!file.seek(static_cast<size_t>(entryOffset))) {
+    LOG_ERR("SCT", "Search failed: could not seek to page LUT entries");
     closeSearchState();
     return std::nullopt;
   }
-  uint32_t searchTextOffset = 0;
-  if (file.read(reinterpret_cast<uint8_t*>(&searchTextOffset), sizeof(searchTextOffset)) != sizeof(searchTextOffset) ||
-      searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
-    LOG_ERR("SCT", "Search failed: invalid text record offset");
-    closeSearchState();
-    return std::nullopt;
-  }
-
-  if (!file.seek(searchTextOffset)) {
-    LOG_ERR("SCT", "Search failed: could not seek to text record");
-    closeSearchState();
-    return std::nullopt;
-  }
-  uint32_t remaining = 0;
-  if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining) ||
-      remaining > fileSize - searchTextOffset - sizeof(uint32_t)) {
-    LOG_ERR("SCT", "Search failed: invalid text record length");
+  if (file.read(lutBuf.data(), lutBuf.size()) != lutBuf.size()) {
+    LOG_ERR("SCT", "Search failed: could not read page LUT entries");
     closeSearchState();
     return std::nullopt;
   }
 
-  // A page with no searchable text (e.g. image-only) is a content discontinuity,
-  // so drop any carried partial match rather than bridging across it.
-  if (remaining == 0) {
-    matched = 0;
-    return false;
+  std::vector<uint32_t> textOffsets;
+  textOffsets.reserve(count);
+  for (uint16_t i = 0; i < count; i++) {
+    uint32_t offset = 0;
+    // searchTextOffset is the 2nd uint32_t in the LUT entry
+    memcpy(&offset, lutBuf.data() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
+    textOffsets.push_back(offset);
   }
 
-  // KMP keeps overlap handling correct while streaming through a 64-byte SD
-  // read buffer. The query's normalized pattern and failure table were compiled
-  // once (compileSearchQuery); the scan skips spaces and hyphens in the record
-  // so layout hyphenation and spacing differences do not block a match. `matched`
-  // is carried in from the previous adjacent page so a query split across a page
-  // boundary still matches.
-  // Left uninitialized: file.read() fills chunkSize bytes and only [0,chunkSize)
-  // is ever read, so the per-page zero-fill would be dead work.
+  // Sequentially read the text records
   std::array<uint8_t, 64> buffer;
-  while (remaining > 0) {
-    const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
-    if (file.read(buffer.data(), chunkSize) != chunkSize) {
-      LOG_ERR("SCT", "Search failed: truncated text record");
+  for (uint16_t i = 0; i < count; i++) {
+    const uint32_t searchTextOffset = textOffsets[i];
+    if (searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
+      LOG_ERR("SCT", "Search failed: invalid text record offset");
       closeSearchState();
       return std::nullopt;
     }
-    remaining -= chunkSize;
 
-    for (size_t i = 0; i < chunkSize; ++i) {
-      if (isSearchSeparator(buffer[i])) {
-        continue;  // spaces/hyphens are insignificant on both sides
+    if (!file.seek(searchTextOffset)) {
+      LOG_ERR("SCT", "Search failed: could not seek to text record");
+      closeSearchState();
+      return std::nullopt;
+    }
+
+    uint32_t remaining = 0;
+    if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining) ||
+        remaining > fileSize - searchTextOffset - sizeof(uint32_t)) {
+      LOG_ERR("SCT", "Search failed: invalid text record length");
+      closeSearchState();
+      return std::nullopt;
+    }
+
+    // A page with no searchable text (e.g. image-only) is a content discontinuity,
+    // so drop any carried partial match rather than bridging across it.
+    if (remaining == 0) {
+      matcher.reset();
+      continue;
+    }
+
+    while (remaining > 0) {
+      const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
+      if (file.read(buffer.data(), chunkSize) != chunkSize) {
+        LOG_ERR("SCT", "Search failed: truncated text record");
+        closeSearchState();
+        return std::nullopt;
       }
-      const uint8_t value = epub::asciiToLower(buffer[i]);
-      while (matched > 0 && value != query.pattern[matched]) {
-        matched = query.prefix[matched - 1];
-      }
-      if (value == query.pattern[matched]) {
-        ++matched;
-        if (matched == query.length) {
-          return true;
+      remaining -= chunkSize;
+
+      for (size_t j = 0; j < chunkSize; ++j) {
+        if (matcher.feed(buffer[j])) {
+          return static_cast<int>(startPage + i);
         }
       }
     }
   }
 
-  return false;
+  return -1;
 }
 
 std::string Section::getTextFromSectionFile() {
