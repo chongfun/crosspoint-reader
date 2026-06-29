@@ -350,5 +350,5 @@ void EpubReaderSearchActivity::render(RenderLock&&) {
   const char* confirmLabel = terminal ? tr(STR_DONE) : "";
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  renderer.displayBuffer(terminal ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
 }
