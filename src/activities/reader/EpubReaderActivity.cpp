@@ -3335,18 +3335,14 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   const int realPage =
       (activeFootnotePreview && footnoteDepth > 0) ? savedPositions[footnoteDepth - 1].pageNumber : resumePage;
 
-  const int searchStartSpine = (realSpine >= 0 && realSpine < epub->getSpineItemsCount()) ? realSpine : 0;
-  const bool hasPendingPageRemap = !section && cachedChapterTotalPageCount > 0 && cachedSpineIndex == searchStartSpine;
-  // The page the search is initiated from (the wrap normally stops before
-  // re-examining it). A fresh search may revisit it only to complete a match
-  // begun on the preceding page. "Find next" begins one page past it so a wrap
-  // cannot re-return it; SearchRoute owns that start/stop relationship.
-  const int initiatedFromPage = searchStartSpine == realSpine ? std::max(0, realPage) : 0;
   const bool sameQuery = strcmp(lastSearchQuery.data(), query.c_str()) == 0;
-  const bool isFindNext =
-      !hasPendingPageRemap && sameQuery && lastSearchResultSpine == realSpine && lastSearchResultPage == realPage;
-  const EpubReaderSearchActivity::SearchRoute route = EpubReaderSearchActivity::SearchRoute::make(
-      searchStartSpine, initiatedFromPage, isFindNext, hasPendingPageRemap ? cachedChapterTotalPageCount : 0);
+  // Resolve the start spine/page and the fresh-vs-"find next" decision in one
+  // pure, host-testable place rather than inline here. The route owns the
+  // start/stop relationship (a wrap stops before re-examining the originating
+  // page; find-next begins one page past it).
+  const EpubReaderSearchActivity::SearchRoute route = EpubReaderSearchActivity::SearchRoute::plan(
+      {realSpine, realPage, epub->getSpineItemsCount(), section != nullptr, cachedChapterTotalPageCount,
+       cachedSpineIndex, sameQuery, lastSearchResultSpine, lastSearchResultPage});
 
   const ReaderViewportLayout viewport = computeReaderViewportLayout(renderer, automaticPageTurnActive);
 

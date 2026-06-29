@@ -20,6 +20,22 @@ namespace {
 constexpr int PROGRESS_REPAINT_STEP_PERCENT = 1;
 }  // namespace
 
+EpubReaderSearchActivity::SearchRoute EpubReaderSearchActivity::SearchRoute::plan(const Origin& origin) {
+  const int startSpine = (origin.spineIndex >= 0 && origin.spineIndex < origin.spineItemsCount) ? origin.spineIndex : 0;
+  // A pending page remap means the section was reflowed but not yet reloaded, so
+  // the cached page count belongs to this start spine and must drive the remap.
+  const bool hasPendingPageRemap =
+      !origin.sectionLoaded && origin.cachedPageCount > 0 && origin.cachedSpineIndex == startSpine;
+  // The page the search is initiated from (the wrap normally stops before
+  // re-examining it). Only meaningful when the start spine is the reader's spine.
+  const int initiatedFromPage = startSpine == origin.spineIndex ? std::max(0, origin.page) : 0;
+  // "Find next" only when repeating the same query from the exact previous match
+  // and no remap is pending; it then begins one page past the originating page.
+  const bool isFindNext = !hasPendingPageRemap && origin.sameQuery &&
+                          origin.lastResultSpineIndex == origin.spineIndex && origin.lastResultPage == origin.page;
+  return make(startSpine, initiatedFromPage, isFindNext, hasPendingPageRemap ? origin.cachedPageCount : 0);
+}
+
 void EpubReaderSearchActivity::SearchRoute::resolvePageCount(const int targetPageCount) {
   if (sourcePageCount <= 0) {
     return;
