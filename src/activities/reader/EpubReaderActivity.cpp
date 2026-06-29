@@ -3373,8 +3373,13 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
     return;
   }
 
-  memcpy(lastSearchQuery.data(), query.data(), query.size());
-  lastSearchQuery[query.size()] = '\0';
+  // lastSearchQuery is a fixed MAX_QUERY_BYTES+1 buffer. The sole caller
+  // validates the size via isValidSearchQuery(), but guard the copy here so this
+  // fixed-array write can never overrun if reached with an oversized query.
+  if (query.size() <= SearchMatcher::MAX_QUERY_BYTES) {
+    memcpy(lastSearchQuery.data(), query.data(), query.size());
+    lastSearchQuery[query.size()] = '\0';
+  }
   if (!sameQuery) {
     lastSearchResultSpine = -1;
     lastSearchResultPage = -1;
