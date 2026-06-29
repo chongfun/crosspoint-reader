@@ -176,7 +176,7 @@ int SearchMatcher::feed(uint8_t c) {
   }
 
   currentCodepointId++;
-  uint8_t currentCodepointWidth = utf8BytesConsumed + pendingSeparatorBytes;
+  uint16_t currentCodepointWidth = utf8BytesConsumed + pendingSeparatorBytes;
   utf8BytesConsumed = 0;
   pendingSeparatorBytes = 0;
 

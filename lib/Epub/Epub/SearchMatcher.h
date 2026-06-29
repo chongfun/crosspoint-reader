@@ -41,13 +41,16 @@ class SearchMatcher {
   std::array<uint8_t, MAX_QUERY_BYTES> prefix{};
   size_t length = 0;
   size_t matched = 0;
-  std::array<uint8_t, MAX_QUERY_BYTES> matchByteWidths{};
+  // Per-codepoint source byte widths. uint16_t (not uint8_t) so a matched span
+  // whose ignored separators total more than 255 bytes cannot wrap and corrupt
+  // the reported match width used for highlight offsets.
+  std::array<uint16_t, MAX_QUERY_BYTES> matchByteWidths{};
   std::array<uint32_t, MAX_QUERY_BYTES> matchCodepointIds{};
 
   uint32_t utf8State = 0;
   uint32_t utf8Codepoint = 0;
   uint8_t utf8BytesConsumed = 0;
-  uint8_t pendingSeparatorBytes = 0;
+  uint16_t pendingSeparatorBytes = 0;
   uint8_t widthBufferHead = 0;
   uint32_t currentCodepointId = 0;
 
