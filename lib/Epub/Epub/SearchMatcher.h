@@ -31,6 +31,7 @@ class SearchMatcher {
     utf8BytesConsumed = 0;
     pendingSeparatorBytes = 0;
     widthBufferHead = 0;
+    currentCodepointId = 0;
   }
 
   bool hasPartialMatch() const { return matched > 0; }
@@ -41,12 +42,14 @@ class SearchMatcher {
   size_t length = 0;
   size_t matched = 0;
   std::array<uint8_t, MAX_QUERY_BYTES> matchByteWidths{};
+  std::array<uint32_t, MAX_QUERY_BYTES> matchCodepointIds{};
 
   uint32_t utf8State = 0;
   uint32_t utf8Codepoint = 0;
   uint8_t utf8BytesConsumed = 0;
   uint8_t pendingSeparatorBytes = 0;
   uint8_t widthBufferHead = 0;
+  uint32_t currentCodepointId = 0;
 
   static size_t normalizeSearchQuery(std::string_view query, std::array<uint8_t, MAX_QUERY_BYTES>& out);
 };

@@ -175,6 +175,11 @@ int SearchMatcher::feed(uint8_t c) {
     return 0;
   }
 
+  currentCodepointId++;
+  uint8_t currentCodepointWidth = utf8BytesConsumed + pendingSeparatorBytes;
+  utf8BytesConsumed = 0;
+  pendingSeparatorBytes = 0;
+
   int totalWidthReturn = 0;
 
   for (int shift = 0; shift < 32; shift += 8) {
@@ -183,9 +188,8 @@ int SearchMatcher::feed(uint8_t c) {
 
     if (isSearchSeparator(b)) {
       if (matched > 0) {
-        pendingSeparatorBytes += utf8BytesConsumed;
+        pendingSeparatorBytes += currentCodepointWidth;
       }
-      utf8BytesConsumed = 0;
       continue;
     }
 
@@ -199,20 +203,22 @@ int SearchMatcher::feed(uint8_t c) {
       pendingSeparatorBytes = 0;
     }
 
-    uint8_t totalBytesForThisChar = utf8BytesConsumed + pendingSeparatorBytes;
-    utf8BytesConsumed = 0;
-    pendingSeparatorBytes = 0;
-
-    // Track raw byte width of this valid character in the circular buffer
-    matchByteWidths[widthBufferHead] = totalBytesForThisChar;
+    matchByteWidths[widthBufferHead] = currentCodepointWidth;
+    matchCodepointIds[widthBufferHead] = currentCodepointId;
     widthBufferHead = (widthBufferHead + 1) % MAX_QUERY_BYTES;
+
     if (value == pattern[matched]) {
       ++matched;
       if (matched == length) {
         int totalWidth = 0;
+        uint32_t lastSeenCodepoint = 0;
         for (size_t i = 0; i < length; ++i) {
           int index = (widthBufferHead + MAX_QUERY_BYTES - length + i) % MAX_QUERY_BYTES;
-          totalWidth += matchByteWidths[index];
+          uint32_t cpId = matchCodepointIds[index];
+          if (cpId != lastSeenCodepoint) {
+            totalWidth += matchByteWidths[index];
+            lastSeenCodepoint = cpId;
+          }
         }
         matched = prefix[matched - 1];
         totalWidthReturn = totalWidth;
