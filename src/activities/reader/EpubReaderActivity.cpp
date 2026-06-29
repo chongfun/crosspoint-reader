@@ -1032,46 +1032,6 @@ void moveFinishedBookToReadFolder(const std::string& srcPath, const std::string&
                                        !SETTINGS.removeReadBooksFromRecents);
 }
 
-struct ReaderViewport {
-  int top;
-  int right;
-  int bottom;
-  int left;
-  uint16_t width;
-  uint16_t height;
-};
-
-ReaderViewport calculateReaderViewport(GfxRenderer& renderer, const bool automaticPageTurnActive) {
-  ReaderViewport viewport{};
-  renderer.getOrientedViewableTRBL(&viewport.top, &viewport.right, &viewport.bottom, &viewport.left);
-  viewport.left += effectiveReaderLeftMargin();
-  viewport.right += SETTINGS.screenMargin;
-
-  const uint8_t statusBarHeight = UITheme::getInstance().getStatusBarHeight();
-  const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
-  if (topStatusBarReservedHeight > 0) {
-    viewport.top += std::max(static_cast<int>(SETTINGS.screenMargin),
-                             topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
-  } else {
-    viewport.top += SETTINGS.screenMargin;
-  }
-
-  if (automaticPageTurnActive &&
-      (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight())) {
-    viewport.bottom +=
-        std::max(SETTINGS.screenMargin,
-                 static_cast<uint8_t>(statusBarHeight + UITheme::getInstance().getMetrics().statusBarVerticalMargin +
-                                      ReaderUtils::STATUS_BAR_TEXT_PADDING));
-  } else {
-    viewport.bottom +=
-        std::max(SETTINGS.screenMargin, static_cast<uint8_t>(statusBarHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING));
-  }
-
-  viewport.width = renderer.getScreenWidth() - viewport.left - viewport.right;
-  viewport.height = renderer.getScreenHeight() - viewport.top - viewport.bottom;
-  return viewport;
-}
-
 }  // namespace
 
 uint8_t EpubReaderActivity::loadBookRenderMode(const std::string& filePath) {
@@ -3395,7 +3355,7 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   const EpubReaderSearchActivity::SearchRoute route = EpubReaderSearchActivity::SearchRoute::make(
       searchStartSpine, initiatedFromPage, isFindNext, hasPendingPageRemap ? cachedChapterTotalPageCount : 0);
 
-  const ReaderViewport viewport = calculateReaderViewport(renderer, automaticPageTurnActive);
+  const ReaderViewportLayout viewport = computeReaderViewportLayout(renderer, automaticPageTurnActive);
 
   // Release the current page graph before allocating the search activity. It
   // will be reconstructed from the SD cache on return, while nextPageNumber
@@ -3412,7 +3372,7 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   // matcher state, and the reusable Section live inline in that allocation;
   // no per-page or per-chapter activity allocations are performed.
   auto searchActivity = makeUniqueNoThrow<EpubReaderSearchActivity>(renderer, mappedInput, epub, query.c_str(), route,
-                                                                    viewport.width, viewport.height);
+                                                                    viewport.viewportWidth, viewport.viewportHeight);
   if (!searchActivity) {
     LOG_ERR("ERS", "OOM: EpubReaderSearchActivity (%u bytes)", static_cast<unsigned>(sizeof(EpubReaderSearchActivity)));
     resumeReadingPaceTimer("search_oom");
