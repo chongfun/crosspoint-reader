@@ -93,7 +93,7 @@ class Section {
   std::string getTextFromSectionFile();
 
   // Get the page count from the section cache file without fully loading it.
-  std::optional<uint16_t> getCachedPageCount() const;
+  std::optional<uint16_t> getCachedPageCount();
 
   // Reuse this Section object for another spine item without another heap
   // allocation. Intended for sequential, book-wide operations such as search.
@@ -106,14 +106,14 @@ class Section {
   std::optional<int> scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher);
 
   // Look up the page number for an anchor id from the section cache file.
-  std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;
+  std::optional<uint16_t> getPageForAnchor(const std::string& anchor);
 
   // Look up the page number for a synthetic paragraph index from XPath p[N].
-  std::optional<uint16_t> getPageForParagraphIndex(uint16_t pIndex) const;
+  std::optional<uint16_t> getPageForParagraphIndex(uint16_t pIndex);
 
   // Look up the page number for a running list-item index from the li LUT.
-  std::optional<uint16_t> getPageForListItemIndex(uint16_t liIndex) const;
+  std::optional<uint16_t> getPageForListItemIndex(uint16_t liIndex);
 
   // Look up the synthetic paragraph index for the given rendered page.
-  std::optional<uint16_t> getParagraphIndexForPage(uint16_t page) const;
+  std::optional<uint16_t> getParagraphIndexForPage(uint16_t page);
 };
