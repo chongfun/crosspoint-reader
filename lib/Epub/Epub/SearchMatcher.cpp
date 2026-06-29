@@ -154,15 +154,21 @@ int SearchMatcher::feed(uint8_t c) {
 
   uint32_t norm = stripLatinDiacritics(utf8Codepoint);
 
-  if (norm < 256 && isSearchSeparator(static_cast<uint8_t>(norm))) {
-    pendingSeparatorBytes += utf8BytesConsumed;
+  if (norm > 255) {
+    return 0;
+  }
+
+  if (isSearchSeparator(static_cast<uint8_t>(norm))) {
+    if (matched > 0) {
+      pendingSeparatorBytes += utf8BytesConsumed;
+    }
     return 0;
   }
 
   uint8_t totalBytesForThisChar = utf8BytesConsumed + pendingSeparatorBytes;
   pendingSeparatorBytes = 0;
 
-  const uint8_t value = norm > 255 ? '?' : static_cast<uint8_t>(norm);
+  const uint8_t value = static_cast<uint8_t>(norm);
 
   // Track raw byte width of this valid character in the circular buffer
   matchByteWidths[widthBufferHead] = totalBytesForThisChar;
