@@ -224,12 +224,12 @@ void EpubReaderSearchActivity::scanNextPage() {
   // Chunk scan to 50 pages at a time to yield to the main render/input loop
   endPage = std::min<int>(endPage, currentPage + 50);
 
-  const size_t matchedBeforeChunk = matcher.matched;
+  const SearchMatcher matcherBeforeChunk = matcher;
   auto match = section.scanForward(currentPage, endPage, matcher);
 
   if (match == std::nullopt && !sectionCacheRepairAttempted) {
     sectionCacheRepairAttempted = true;
-    matcher.matched = matchedBeforeChunk;
+    matcher = matcherBeforeChunk;
 
     // Invalidate corrupt cache
     section.resetForSpine(currentSpineIndex);
