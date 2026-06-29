@@ -48,7 +48,15 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
   // 3. Find matches of compiledQuery in normalizedPageText incorporating prior page state
   searchHighlightMatchRanges.clear();
   if (section->currentPage > 0) {
-    section->scanForward(std::max(0, section->currentPage - 1), section->currentPage, matcher);
+    // Prime the matcher with the previous page so a match that began there and
+    // completes on this page still highlights. If that scan fails it leaves the
+    // matcher mid-feed; reset it so we highlight only matches contained on this
+    // page rather than feeding indeterminate carried state.
+    const Section::ScanResult primeResult =
+        section->scanForward(std::max(0, section->currentPage - 1), section->currentPage, matcher);
+    if (primeResult.status == Section::ScanStatus::CorruptCache || primeResult.status == Section::ScanStatus::IoError) {
+      matcher.reset();
+    }
   }
 
   for (size_t charIndex = 0; charIndex < searchHighlightPageText.size(); ++charIndex) {
