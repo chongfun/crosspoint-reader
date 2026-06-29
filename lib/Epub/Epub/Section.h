@@ -21,6 +21,8 @@ struct SectionBuildOptions {
   bool isPreview() const { return previewAnchor && previewAnchor[0] != '\0' && previewMaxPages > 0; }
 };
 
+struct SearchIoContext;
+
 class Section {
   std::shared_ptr<Epub> epub;
   int spineIndex;
@@ -42,6 +44,8 @@ class Section {
   bool searchHeaderReady = false;
   uint32_t searchFileSize = 0;
   uint32_t searchLutOffset = 0;
+
+  SearchIoContext* asyncSearchCtx = nullptr;
 
   bool writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
                               uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
@@ -76,7 +80,7 @@ class Section {
     sectionPathPrefixLen = filePath.size();
     rebuildFilePathForSpine();
   }
-  ~Section() = default;
+  ~Section();
   bool loadSectionFile(int fontId, float lineCompression, bool extraParagraphSpacing, bool forceParagraphIndents,
                        uint8_t paragraphAlignment, uint16_t viewportWidth, uint16_t viewportHeight,
                        bool hyphenationEnabled, bool embeddedStyle, uint8_t imageRendering, bool bionicReadingEnabled,
@@ -99,10 +103,23 @@ class Section {
   // allocation. Intended for sequential, book-wide operations such as search.
   void resetForSpine(int newSpineIndex);
 
-  // Search forward through cached section pages from `startPage` up to `endPage`,
-  // batching LUT reads and streaming text records sequentially. Returns the
-  // first page index where `matcher.feed` completes a match, -1 if no match,
-  // or nullopt if a cache error occurs.
+  // Initialize a double-buffered background task to fetch page text records
+  // from the SD card. Overlaps I/O with CPU KMP processing.
+  bool beginAsyncSearchScan(uint16_t startPage, uint16_t endPage);
+
+  // Process fetched text buffers using the provided matcher.
+  // Returns:
+  //   >= 0 : Match found on this page index
+  //   -1   : Processed maxPagesToProcess without a match (yield to UI)
+  //   -2   : Error occurred
+  //   -3   : End of file (chunk finished without match)
+  int pumpAsyncSearchScan(SearchMatcher& matcher, int maxPagesToProcess, int& outLastProcessedPage);
+
+  // Gracefully terminate the background I/O task and free double buffers.
+  void cancelAsyncSearchScan();
+
+  // Run a synchronous forward search over [startPage, endPage) starting with the
+  // given matcher state (e.g. from the previous page's wrap).
   std::optional<int> scanForward(uint16_t startPage, uint16_t endPage, SearchMatcher& matcher);
 
   // Look up the page number for an anchor id from the section cache file.

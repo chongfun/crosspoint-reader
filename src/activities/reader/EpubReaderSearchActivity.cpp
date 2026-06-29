@@ -120,6 +120,8 @@ void EpubReaderSearchActivity::advanceSpine() {
   currentPage = 0;
   sectionLoaded = false;
   sectionCacheRepairAttempted = false;
+  if (asyncScanRunning) section.cancelAsyncSearchScan();
+  asyncScanRunning = false;
   matcher.reset();  // spine boundary: don't carry a partial match across chapters
 }
 
@@ -174,6 +176,8 @@ bool EpubReaderSearchActivity::advanceSpineIfNeeded() {
       currentPage = 0;
       sectionLoaded = false;
       sectionCacheRepairAttempted = false;
+      if (asyncScanRunning) section.cancelAsyncSearchScan();
+      asyncScanRunning = false;
       matcher.reset();  // wrap is not contiguous reading text
     }
 
@@ -224,10 +228,19 @@ void EpubReaderSearchActivity::scanNextPage() {
   // Chunk scan to 50 pages at a time to yield to the main render/input loop
   endPage = std::min<int>(endPage, currentPage + 50);
 
-  const SearchMatcher matcherBeforeChunk = matcher;
-  auto match = section.scanForward(currentPage, endPage, matcher);
+  if (!asyncScanRunning) {
+    if (!section.beginAsyncSearchScan(currentPage, endPage)) {
+      // Trigger repair attempt down below
+    } else {
+      asyncScanRunning = true;
+    }
+  }
 
-  if (match == std::nullopt && !sectionCacheRepairAttempted) {
+  const SearchMatcher matcherBeforeChunk = matcher;
+  int lastProcessedPage = currentPage;
+  int match = section.pumpAsyncSearchScan(matcher, 50, lastProcessedPage);
+
+  if (match == -2 && !sectionCacheRepairAttempted) {
     sectionCacheRepairAttempted = true;
     matcher = matcherBeforeChunk;
 
@@ -239,25 +252,39 @@ void EpubReaderSearchActivity::scanNextPage() {
     if (!ensureSectionLoaded()) {
       return;
     }
-    match = section.scanForward(currentPage, endPage, matcher);
+
+    asyncScanRunning = false;
+    if (section.beginAsyncSearchScan(currentPage, endPage)) {
+      asyncScanRunning = true;
+      match = section.pumpAsyncSearchScan(matcher, 50, lastProcessedPage);
+    }
   }
 
-  if (match == std::nullopt) {
+  if (match == -2) {
     // Do not leave a version-valid but unreadable cache to fail every future search.
     section.resetForSpine(currentSpineIndex);
     sectionLoaded = false;
+    asyncScanRunning = false;
     section.clearCache();
     setFailure(SearchState::Error);
     return;
   }
 
-  if (*match >= 0) {
-    setResult(ProgressChangeResult{currentSpineIndex, *match});
+  if (match == -3) {
+    asyncScanRunning = false;
+    currentPage = endPage;
+    return;
+  }
+
+  if (match >= 0) {
+    setResult(ProgressChangeResult{currentSpineIndex, match});
     finish();
     return;
   }
 
-  currentPage = endPage;
+  if (lastProcessedPage >= currentPage) {
+    currentPage = lastProcessedPage + 1;
+  }
 }
 
 int EpubReaderSearchActivity::searchProgressPercent() const {

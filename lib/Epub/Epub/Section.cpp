@@ -13,6 +13,80 @@
 #include <cstdio>
 
 #include "AsciiCase.h"
+
+#ifdef SIMULATOR
+#include <condition_variable>
+#include <mutex>
+#include <queue>
+struct SearchBuffer {
+  std::vector<uint8_t> data;
+  uint16_t length = 0;
+  uint16_t pageIndex = 0;
+  bool isEof = false;
+  bool isError = false;
+};
+struct QueueMock {
+  std::queue<SearchBuffer*> q;
+  std::mutex m;
+  std::condition_variable cv;
+  size_t capacity;
+};
+typedef QueueMock* QueueHandle_t;
+inline QueueHandle_t xQueueCreate(size_t len, size_t) {
+  QueueMock* mock = new QueueMock();
+  mock->capacity = len;
+  return mock;
+}
+inline void vQueueDelete(QueueHandle_t q) { delete q; }
+inline int xQueueSend(QueueHandle_t q, void* item, uint32_t) {
+  std::lock_guard<std::mutex> lk(q->m);
+  q->q.push(*static_cast<SearchBuffer**>(item));
+  q->cv.notify_one();
+  return 1;
+}
+inline int xQueueReceive(QueueHandle_t q, void* item, uint32_t ticks) {
+  std::unique_lock<std::mutex> lk(q->m);
+  if (!q->cv.wait_for(lk, std::chrono::milliseconds(ticks == 0xFFFFFFFF ? 100000 : ticks),
+                      [q] { return !q->q.empty(); }))
+    return 0;
+  *static_cast<SearchBuffer**>(item) = q->q.front();
+  q->q.pop();
+  return 1;
+}
+#define portMAX_DELAY 0xFFFFFFFF
+#define pdTRUE 1
+#define pdPASS 1
+#else
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
+struct SearchBuffer {
+  std::vector<uint8_t> data;
+  uint16_t length = 0;
+  uint16_t pageIndex = 0;
+  bool isEof = false;
+  bool isError = false;
+};
+#endif
+
+struct SearchIoContext {
+  HalFile file;
+  std::vector<uint32_t> textOffsets;
+  uint16_t startPage = 0;
+  uint16_t endPage = 0;
+  QueueHandle_t emptyQueue = nullptr;
+  QueueHandle_t filledQueue = nullptr;
+  TaskHandle_t taskHandle = nullptr;
+  volatile bool cancelFlag = false;
+  std::array<SearchBuffer, 2> buffers;
+
+  ~SearchIoContext() {
+    if (emptyQueue) vQueueDelete(emptyQueue);
+    if (filledQueue) vQueueDelete(filledQueue);
+    if (file) file.close();
+  }
+};
+
 #include "Epub/css/CssParser.h"
 #include "Page.h"
 #include "hyphenation/Hyphenator.h"
@@ -627,7 +701,10 @@ void Section::closeSearchState() {
   searchHeaderReady = false;
 }
 
+Section::~Section() { cancelAsyncSearchScan(); }
+
 void Section::resetForSpine(const int newSpineIndex) {
+  cancelAsyncSearchScan();
   closeSearchState();
   spineIndex = newSpineIndex;
   rebuildFilePathForSpine();
@@ -765,6 +842,192 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
   }
 
   return -1;
+}
+
+static void SearchIoTaskFunction(void* pvParameters) {
+  auto* ctx = static_cast<SearchIoContext*>(pvParameters);
+
+  for (uint16_t page = ctx->startPage; page < ctx->endPage; ++page) {
+    if (ctx->cancelFlag) {
+      break;
+    }
+
+    SearchBuffer* buf = nullptr;
+    if (xQueueReceive(ctx->emptyQueue, &buf, portMAX_DELAY) != pdTRUE) {
+      break;
+    }
+
+    if (ctx->cancelFlag) {
+      buf->isEof = true;
+      xQueueSend(ctx->filledQueue, &buf, portMAX_DELAY);
+#ifndef SIMULATOR
+      vTaskDelete(nullptr);
+#endif
+      return;
+    }
+
+    const uint32_t searchTextOffset = ctx->textOffsets[page - ctx->startPage];
+    if (searchTextOffset > ctx->file.size() || !ctx->file.seek(searchTextOffset)) {
+      LOG_ERR("SCT", "Async Search I/O failed seek");
+      ctx->cancelFlag = true;
+      break;
+    }
+
+    uint32_t remaining = 0;
+    if (ctx->file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining)) {
+      ctx->cancelFlag = true;
+      break;
+    }
+
+    if (remaining > buf->data.capacity()) {
+      buf->data.resize(remaining);
+    }
+    buf->length = remaining;
+    buf->pageIndex = page;
+    buf->isEof = false;
+
+    if (remaining > 0) {
+      if (ctx->file.read(buf->data.data(), remaining) != remaining) {
+        ctx->cancelFlag = true;
+        break;
+      }
+    }
+
+    xQueueSend(ctx->filledQueue, &buf, portMAX_DELAY);
+  }
+
+  SearchBuffer* eofBuf = nullptr;
+  if (xQueueReceive(ctx->emptyQueue, &eofBuf, portMAX_DELAY) == pdTRUE) {
+    eofBuf->isEof = true;
+    eofBuf->isError = ctx->cancelFlag;
+    xQueueSend(ctx->filledQueue, &eofBuf, portMAX_DELAY);
+  }
+
+#ifndef SIMULATOR
+  vTaskDelete(nullptr);
+#endif
+}
+
+bool Section::beginAsyncSearchScan(uint16_t startPage, uint16_t endPage) {
+  if (asyncSearchCtx) cancelAsyncSearchScan();
+
+  if (!ensureSearchHeader()) return false;
+
+  const uint16_t count = endPage - startPage;
+  if (count == 0) {
+    return false;
+  }
+
+  auto ctx = std::make_unique<SearchIoContext>();
+  if (!Storage.openFileForRead("SCT", filePath, ctx->file)) {
+    return false;
+  }
+
+  ctx->startPage = startPage;
+  ctx->endPage = endPage;
+
+  const uint64_t entryOffset = static_cast<uint64_t>(searchLutOffset) +
+                               static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * static_cast<uint32_t>(startPage);
+  if (!ctx->file.seek(static_cast<size_t>(entryOffset))) {
+    return false;
+  }
+
+  std::vector<uint8_t> lutBuf(PAGE_LUT_ENTRY_SIZE * count);
+  if (ctx->file.read(lutBuf.data(), lutBuf.size()) != lutBuf.size()) {
+    return false;
+  }
+
+  ctx->textOffsets.reserve(count);
+  for (uint16_t i = 0; i < count; i++) {
+    uint32_t offset = 0;
+    memcpy(&offset, lutBuf.data() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
+    ctx->textOffsets.push_back(offset);
+  }
+
+  ctx->emptyQueue = xQueueCreate(2, sizeof(SearchBuffer*));
+  ctx->filledQueue = xQueueCreate(2, sizeof(SearchBuffer*));
+
+  for (int i = 0; i < 2; ++i) {
+    ctx->buffers[i].data.resize(4096);
+    SearchBuffer* ptr = &ctx->buffers[i];
+    xQueueSend(ctx->emptyQueue, &ptr, 0);
+  }
+
+  asyncSearchCtx = ctx.release();
+
+  if (xTaskCreate(SearchIoTaskFunction, "SearchIo", 4096, asyncSearchCtx, 5, &asyncSearchCtx->taskHandle) != pdPASS) {
+    LOG_ERR("SCT", "Failed to create SearchIoTask");
+    cancelAsyncSearchScan();
+    return false;
+  }
+
+  return true;
+}
+
+int Section::pumpAsyncSearchScan(SearchMatcher& matcher, int maxPagesToProcess, int& outLastProcessedPage) {
+  if (!asyncSearchCtx) return -2;
+
+  for (int i = 0; i < maxPagesToProcess; ++i) {
+    SearchBuffer* buf = nullptr;
+#ifdef SIMULATOR
+    if (!xQueueReceive(asyncSearchCtx->filledQueue, &buf, 10)) {
+#else
+    if (xQueueReceive(asyncSearchCtx->filledQueue, &buf, pdMS_TO_TICKS(10)) != pdTRUE) {
+#endif
+      return -1;
+    }
+
+    if (buf->isEof) {
+      asyncSearchCtx->taskHandle = nullptr;
+      xQueueSend(asyncSearchCtx->emptyQueue, &buf, 0);
+      cancelAsyncSearchScan();
+      return -2;
+    }
+
+    if (buf->length == 0) {
+      outLastProcessedPage = buf->pageIndex;
+      matcher.reset();
+    } else {
+      bool matched = false;
+      for (uint16_t j = 0; j < buf->length; ++j) {
+        if (matcher.feed(buf->data[j]) > 0) {
+          matched = true;
+          break;
+        }
+      }
+      outLastProcessedPage = buf->pageIndex;
+      if (matched) {
+        uint16_t matchPage = buf->pageIndex;
+        xQueueSend(asyncSearchCtx->emptyQueue, &buf, 0);
+        return matchPage;
+      }
+    }
+
+    xQueueSend(asyncSearchCtx->emptyQueue, &buf, 0);
+  }
+
+  return -1;
+}
+
+void Section::cancelAsyncSearchScan() {
+  if (!asyncSearchCtx) return;
+
+  if (asyncSearchCtx->taskHandle) {
+    asyncSearchCtx->cancelFlag = true;
+    SearchBuffer* buf = nullptr;
+#ifdef SIMULATOR
+    while (xQueueReceive(asyncSearchCtx->filledQueue, &buf, 1000)) {
+#else
+    while (xQueueReceive(asyncSearchCtx->filledQueue, &buf, pdMS_TO_TICKS(1000)) == pdTRUE) {
+#endif
+      bool eof = buf->isEof;
+      xQueueSend(asyncSearchCtx->emptyQueue, &buf, 0);
+      if (eof) break;
+    }
+  }
+
+  delete asyncSearchCtx;
+  asyncSearchCtx = nullptr;
 }
 
 std::string Section::getTextFromSectionFile() {

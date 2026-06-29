@@ -62,6 +62,7 @@ class EpubReaderSearchActivity final : public Activity {
   bool sectionLoaded = false;
   bool sectionCacheRepairAttempted = false;
   bool wrapped = false;
+  bool asyncScanRunning = false;
 
   // Last progress percentage painted to the panel. Repaints are gated on this
   // changing so the e-ink panel is not refreshed per page. Starts at 0 because
