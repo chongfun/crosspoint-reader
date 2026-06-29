@@ -1,44 +1,20 @@
 #pragma once
 
-#include <cstdint>
-#include <string>
-#include <utility>
-#include <vector>
-
 class GfxRenderer;
 class Page;
-class Section;
 
+// Draws the in-book search highlight on the page the search landed on. The match
+// location is computed once by the search scan (Section::scanForward) and handed
+// down as a byte span; this class is a pure consumer that maps that span to the
+// page's words and paints them. It does not run the matcher, normalize text, or
+// read the cache, so there is a single matching pipeline (the scan's) rather than
+// a second one re-derived at render time.
 class SearchHighlighter {
  public:
-  SearchHighlighter() = default;
-
-  void drawSearchHighlights(const Page& page, const int fontId, const int orientedMarginTop,
-                            const int orientedMarginLeft, Section* section, const int currentSpineIndex,
-                            const char* lastSearchQuery, GfxRenderer& renderer) const;
-
-  // Free the scratch buffers (~12 KB). Called when the on-page highlight is no
-  // longer active so a reader who is not viewing a search result does not hold
-  // the footprint; drawSearchHighlights re-reserves lazily on the next use.
-  void release();
-
- private:
-  // Reserve the scratch buffers on first use; no-op once reserved.
-  void ensureBuffersReserved() const;
-
-  mutable std::string searchHighlightPageText;
-  mutable std::vector<uint16_t> searchHighlightCharToWordIndex;
-  mutable std::vector<std::pair<uint16_t, uint16_t>> searchHighlightMatchRanges;
-
-  // Memo of the (spine, page, query) the cached match ranges were computed for,
-  // so repeated renders of the same search-result page (status-bar refreshes,
-  // etc.) reuse the ranges instead of re-reading the previous page from SD and
-  // recompiling the matcher each frame. The spine must be part of the key: the
-  // same page number can recur in a different spine (e.g. "find next" landing on
-  // the same page index of another chapter), and keying on page+query alone
-  // would repaint the prior spine's ranges. Invalidated by release().
-  mutable bool searchHighlightComputed = false;
-  mutable int searchHighlightCachedSpine = -1;
-  mutable int searchHighlightCachedPage = -1;
-  mutable std::string searchHighlightCachedQuery;
+  // Highlight the matched words on `page`. [matchStartByte, matchEndByte] is the
+  // inclusive byte span of the match within the page's serialized search-text
+  // record (as reported by Section::scanForward). A negative or inverted span
+  // means "nothing to highlight" and draws nothing.
+  void drawSearchHighlights(const Page& page, int fontId, int orientedMarginTop, int orientedMarginLeft,
+                            int matchStartByte, int matchEndByte, GfxRenderer& renderer) const;
 };

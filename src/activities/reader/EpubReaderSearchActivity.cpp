@@ -280,7 +280,7 @@ void EpubReaderSearchActivity::scanNextPage() {
   }
 
   if (result.status == Section::ScanStatus::Match) {
-    setResult(ProgressChangeResult{currentSpineIndex, result.page});
+    setResult(ProgressChangeResult{currentSpineIndex, result.page, result.matchStartByte, result.matchEndByte});
     finish();
     return;
   }

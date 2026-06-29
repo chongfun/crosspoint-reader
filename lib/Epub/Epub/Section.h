@@ -36,6 +36,13 @@ class Section {
   struct ScanResult {
     ScanStatus status = ScanStatus::NoMatch;
     int page = -1;  // valid only when status == Match
+    // Byte span of the match within `page`'s serialized search-text record
+    // (inclusive), valid only when status == Match. startByte is clamped to 0
+    // when the match began on an earlier page, so [matchStartByte, matchEndByte]
+    // always covers the portion that lies on `page`. SearchHighlighter maps this
+    // span to the page's words without re-running the matcher.
+    int matchStartByte = -1;
+    int matchEndByte = -1;
   };
 
  private:

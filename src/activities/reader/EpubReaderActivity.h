@@ -132,6 +132,11 @@ class EpubReaderActivity final : public Activity {
   std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> lastSearchQuery{};
   int lastSearchResultSpine = -1;
   int lastSearchResultPage = -1;
+  // Byte span of the active search match within (lastSearchResultSpine,
+  // lastSearchResultPage)'s search-text record, handed up by the search scan so
+  // the highlighter can paint it without re-matching. -1 when not on a result page.
+  int lastSearchMatchStartByte = -1;
+  int lastSearchMatchEndByte = -1;
   SearchHighlighter searchHighlighter;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).

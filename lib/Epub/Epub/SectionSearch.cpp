@@ -155,6 +155,10 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       continue;
     }
 
+    // Byte offset of the next fed byte within this page's text record content
+    // (the bytes after the u32 length prefix). Used to report where a completed
+    // match lies so the highlighter can map it to words without re-scanning.
+    uint32_t pageBytePos = 0;
     while (remaining > 0) {
       const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
       if (file.read(buffer.data(), chunkSize) != chunkSize) {
@@ -165,9 +169,18 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       remaining -= chunkSize;
 
       for (size_t j = 0; j < chunkSize; ++j) {
-        if (matcher.feed(buffer[j]) > 0) {
-          return {ScanStatus::Match, static_cast<int>(startPage + i)};
+        const int matchWidth = matcher.feed(buffer[j]);
+        if (matchWidth > 0) {
+          // buffer[j] is the match's last byte; the match spans the preceding
+          // matchWidth bytes. Clamp the start to 0 when the match began on an
+          // earlier page so the span covers only this page's portion.
+          const int endByte = static_cast<int>(pageBytePos);
+          const int startByte = (pageBytePos + 1 >= static_cast<uint32_t>(matchWidth))
+                                    ? static_cast<int>(pageBytePos + 1 - static_cast<uint32_t>(matchWidth))
+                                    : 0;
+          return {ScanStatus::Match, static_cast<int>(startPage + i), startByte, endByte};
         }
+        ++pageBytePos;
       }
     }
   }

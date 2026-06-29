@@ -176,6 +176,74 @@ bool forEachVisiblePageWord(const Page& page, Callback&& callback) {
   return true;
 }
 
+// Map an inclusive [startByte, endByte] span in a page's serialized search-text
+// record (see Page::serializeSearchText) to the inclusive range of visible page
+// word indices it covers — the same indices forEachVisiblePageWord and
+// drawWordHighlights use. Returns false if the span touches no visible word.
+//
+// This is the inverse of Page::serializeSearchText: that record is the page's
+// words in element/line/block order, each word preceded by a single-byte
+// separator except the first word emitted on the page, every word contributing
+// its raw word.size() bytes (including any em-space prefix). The walk reproduces
+// that byte layout exactly so offsets stay aligned with the matcher's, while
+// applying forEachVisiblePageWord's visible-word filter for the returned indices.
+// Letting the matcher report byte offsets and mapping them here means the
+// highlighter never re-runs search or re-reads the cache to place a match.
+inline bool searchByteSpanToWordRange(const Page& page, const uint32_t startByte, const uint32_t endByte,
+                                      uint16_t& outFirstWord, uint16_t& outLastWord) {
+  uint32_t recordPos = 0;       // byte offset of the next word in the record
+  bool emittedAnyWord = false;  // mirrors serializeSearchText's page-wide separator flag
+  uint16_t visibleWordIndex = 0;
+  bool found = false;
+  for (const auto& element : page.elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto& line = static_cast<const PageLine&>(*element);
+    if (!line.getBlock()) continue;
+
+    const auto& block = *line.getBlock();
+    const auto& wordList = block.getWords();
+    const auto& xpos = block.getWordXpos();
+    const auto& styles = block.getWordStyles();
+    // serializeSearchText writes every word in the block; forEachVisiblePageWord
+    // only indexes those within this min() guard, so cap the visible-index space
+    // the same way while still counting every word's bytes.
+    const size_t visibleCount = std::min({wordList.size(), xpos.size(), styles.size()});
+    for (size_t i = 0; i < wordList.size(); ++i) {
+      const std::string& word = wordList[i];
+      if (emittedAnyWord) ++recordPos;  // WORD_SEPARATOR
+      emittedAnyWord = true;
+      const uint32_t wordStart = recordPos;
+      recordPos += static_cast<uint32_t>(word.size());
+      const uint32_t wordEnd = recordPos;  // exclusive
+
+      bool visible = i < visibleCount;
+      if (visible) {
+        const char* vw = word.c_str() + (hasEmSpacePrefix(word) ? 3 : 0);
+        bool hasVisibleText = false;
+        for (const char* p = vw; *p != '\0'; ++p) {
+          if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+            hasVisibleText = true;
+            break;
+          }
+        }
+        visible = hasVisibleText;
+      }
+      if (!visible) continue;
+
+      // Inclusive match span overlaps the half-open word byte range.
+      if (word.size() > 0 && wordStart <= endByte && wordEnd > startByte) {
+        if (!found) {
+          outFirstWord = visibleWordIndex;
+          found = true;
+        }
+        outLastWord = visibleWordIndex;
+      }
+      ++visibleWordIndex;
+    }
+  }
+  return found;
+}
+
 // Paint a per-word highlight over every visible word for which `isHighlighted`
 // returns true. Owns the shared geometry — em-space prefix offset and the
 // next-word width extension that closes the gap between adjacent highlighted

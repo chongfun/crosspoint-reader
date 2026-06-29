@@ -3367,6 +3367,8 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   if (!sameQuery) {
     lastSearchResultSpine = -1;
     lastSearchResultPage = -1;
+    lastSearchMatchStartByte = -1;
+    lastSearchMatchEndByte = -1;
   }
 
   startActivityForResult(std::move(searchActivity), [this](const ActivityResult& result) {
@@ -3383,6 +3385,8 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
       cachedChapterTotalPageCount = 0;
       lastSearchResultSpine = match.spineIndex;
       lastSearchResultPage = match.page;
+      lastSearchMatchStartByte = match.matchStartByte;
+      lastSearchMatchEndByte = match.matchEndByte;
       showToast(tr(STR_SEARCH_MATCH_FOUND), ReaderUtils::READER_MESSAGE_DURATION_MS);
     }
     resumeReadingPaceTimer("search_return");
@@ -4119,13 +4123,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   if (section && (currentSpineIndex != lastSearchResultSpine || section->currentPage != lastSearchResultPage)) {
-    if (lastSearchResultSpine != -1 || lastSearchResultPage != -1) {
-      // Left the search-result page: the highlight is no longer drawn, so free
-      // the highlighter's scratch buffers until the next search.
-      searchHighlighter.release();
-    }
+    // Left the search-result page: the highlight is no longer active.
     lastSearchResultSpine = -1;
     lastSearchResultPage = -1;
+    lastSearchMatchStartByte = -1;
+    lastSearchMatchEndByte = -1;
   }
 
   const auto t0 = millis();
@@ -4158,10 +4160,10 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
 
   const auto finalizeBufferComposition = [&]() {
     drawClippingHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft);
-    const char* activeSearchQuery =
-        (lastSearchResultSpine != -1 && lastSearchResultPage != -1) ? lastSearchQuery.data() : nullptr;
-    searchHighlighter.drawSearchHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft, section.get(),
-                                           currentSpineIndex, activeSearchQuery, renderer);
+    const bool onSearchResultPage = lastSearchResultSpine != -1 && lastSearchResultPage != -1;
+    searchHighlighter.drawSearchHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft,
+                                           onSearchResultPage ? lastSearchMatchStartByte : -1,
+                                           onSearchResultPage ? lastSearchMatchEndByte : -1, renderer);
     drawPublisherPageMarkers(renderer, *page, orientedMarginTop, contentBottom, foregroundBlack);
   };
 

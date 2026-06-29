@@ -74,8 +74,10 @@ The responsibilities are split as follows:
 - `EpubReaderMenuActivity` exposes the existing translated `Search` command.
 - `EpubReaderActivity` owns query history and coordinates the keyboard, search
   activity, reader position, and result popup.
-- `SearchHighlighter` encapsulates the transient on-page text highlighting logic 
-  and manages its own reusable memory buffers to avoid rendering-path allocations.
+- `SearchHighlighter` encapsulates the transient on-page text highlighting logic.
+  It is a pure consumer of the byte span the scan reports for the matched page:
+  it maps that span to the page's words and paints them, without re-running the
+  matcher, re-normalizing text, or re-reading the cache, so it holds no buffers.
 - `EpubReaderSearchActivity` is a small state machine whose `scanNextPage()`
   scan loop scans a bounded chunk of up to 50 pages per main-loop iteration
   before yielding, and distinguishes `Searching`, `NotFound`, and `Error`.
@@ -150,9 +152,9 @@ changes its spine and cache path in place, avoiding a new/delete cycle for each
 chapter. Before the activity is allocated, the reader releases its current
 `Section` and deserialized page graph. This avoids keeping the normal reader
 working set and the search working set live together. Result highlighting is
-delegated to `SearchHighlighter`, which pre-allocates its own reusable vectors
-during `EpubReaderActivity` initialization to avoid heap fragmentation in the
-render loop.
+delegated to `SearchHighlighter`, which is stateless: the scan reports the
+matched byte span, and the highlighter maps it to words at render time, so it
+needs no buffers of its own.
 
 The 12,288-byte LUT reservation is not a new steady-state index. Section layout
 already needs a data-dependent page LUT; reserving 1,024 entries once avoids
@@ -321,10 +323,10 @@ prevents automatic sleep while searching.
   page.
 - Matches are page-level. Repeating a query skips the rest of the current page,
   so multiple occurrences on one page are not individually navigable.
-- There is no match result list, but the matching page highlights all occurrences of the query.
+- There is no match result list. The matching page highlights the specific match the scan found (the one the result navigates to), not every occurrence of the query on that page.
 - Search match highlighting uses a high-contrast inverted style (solid black background with white/light text) to make matches immediately stand out on the screen.
 - Highlighting is transient and scoped: it is only rendered on the initial search-match result page. Turning the page or navigating away automatically clears the highlight state so it does not persist on subsequent reads.
-- Highlight detection runs at render time by normalizing the current page's visible words (lowercase, hyphens/spaces stripped) and matching them against the normalized query. This guarantees alignment with KMP indexing but adds a minor, one-off CPU and temporary RAM cost during page composition.
+- Highlight placement is producer-driven: `Section::scanForward()` reports the match's byte span within the page's search-text record, and `SearchHighlighter` maps that span to the page's words at render time. The match is located once by the scan rather than re-derived by a second matcher, so the highlighter never re-normalizes text or re-reads the cache. A match that began on the previous page reports a span clamped to the page start, so its visible tail still highlights without re-scanning the previous page.
 - Case-insensitive matching and diacritic folding are supported for ASCII and common Latin characters. Characters outside the supported Latin set must match exactly.
 - Search text is reconstructed from rendered word tokens with single spaces, so
   it can differ from the EPUB source in spacing and in words split by layout-time
