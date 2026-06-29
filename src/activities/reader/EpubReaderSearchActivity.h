@@ -105,6 +105,10 @@ class EpubReaderSearchActivity final : public Activity {
   bool reachedWrappedStop() const;
   bool shouldScanWrappedStopContinuation() const;
   void advanceSpine();
+  // Invalidate the current spine's section so the next scan rebuilds it: reset the
+  // section for this spine, mark it unloaded, and delete the on-disk cache. Used by
+  // the corrupt-cache repair and give-up paths so both teardown sequences stay in step.
+  void dropSectionCache();
   void scanNextPage();
   // Approximate 0-100 fraction of the scan route completed: the byte-weighted
   // distance travelled since the search began, over the route length (forward to

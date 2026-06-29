@@ -62,9 +62,7 @@ EpubReaderSearchActivity::EpubReaderSearchActivity(GfxRenderer& renderer, Mapped
     : Activity("EpubReaderSearch", renderer, mappedInput),
       epub(epub),
       section(this->epub, route.startSpineIndex, renderer,
-              ReaderUtils::sectionCacheSuffixForRenderMode(isValidEpubRenderMode(SETTINGS.epubRenderMode)
-                                                               ? static_cast<EpubRenderMode>(SETTINGS.epubRenderMode)
-                                                               : EpubRenderMode::CrossInkDefault)),
+              ReaderUtils::sectionCacheSuffixForRenderMode(normalizeRenderMode(SETTINGS.epubRenderMode))),
       route(route),
       currentSpineIndex(route.startSpineIndex),
       currentPage(route.startPage),
@@ -137,6 +135,12 @@ void EpubReaderSearchActivity::advanceSpine() {
   sectionLoaded = false;
   sectionCacheRepairAttempted = false;
   matcher.reset();  // spine boundary: don't carry a partial match across chapters
+}
+
+void EpubReaderSearchActivity::dropSectionCache() {
+  section.resetForSpine(currentSpineIndex);
+  sectionLoaded = false;
+  section.clearCache();
 }
 
 bool EpubReaderSearchActivity::ensureSectionLoaded() {
@@ -255,9 +259,7 @@ void EpubReaderSearchActivity::scanNextPage() {
     sectionCacheRepairAttempted = true;
     matcher = matcherBeforeChunk;
 
-    section.resetForSpine(currentSpineIndex);
-    sectionLoaded = false;
-    section.clearCache();
+    dropSectionCache();
 
     if (!ensureSectionLoaded()) {
       return;
@@ -272,9 +274,7 @@ void EpubReaderSearchActivity::scanNextPage() {
   if (result.status == Section::ScanStatus::CorruptCache) {
     // Still corrupt after a rebuild: drop the bad cache and surface the error
     // rather than entering an unbounded rebuild loop.
-    section.resetForSpine(currentSpineIndex);
-    sectionLoaded = false;
-    section.clearCache();
+    dropSectionCache();
     setFailure(SearchState::Error);
     return;
   }

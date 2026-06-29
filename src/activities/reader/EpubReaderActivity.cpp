@@ -103,10 +103,7 @@ std::string confirmationHeading(const StrId actionLabelId) {
   return std::string(tr(STR_CONFIRM)) + ": " + std::string(I18N.get(actionLabelId));
 }
 
-EpubRenderMode normalizeRenderMode(const uint8_t rawMode) {
-  return isValidEpubRenderMode(rawMode) ? static_cast<EpubRenderMode>(rawMode) : EpubRenderMode::CrossInkDefault;
-}
-
+// normalizeRenderMode() is shared via Epub/EpubRenderMode.h.
 uint8_t normalizeRenderModeRaw(const uint8_t rawMode) { return static_cast<uint8_t>(normalizeRenderMode(rawMode)); }
 
 uint64_t hashFootnotePreviewAnchor(const std::string& anchor) {
@@ -190,12 +187,9 @@ void applySafeModeReaderSettings() {
   SETTINGS.guideReadingEnabled = 0;
 }
 
-bool hasEmSpacePrefix(const std::string& text) {
-  return text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xE2 &&
-         static_cast<unsigned char>(text[1]) == 0x80 && static_cast<unsigned char>(text[2]) == 0x83;
+std::string stripEmSpacePrefix(const std::string& text) {
+  return EpubReaderUtils::hasEmSpacePrefix(text) ? text.substr(3) : text;
 }
-
-std::string stripEmSpacePrefix(const std::string& text) { return hasEmSpacePrefix(text) ? text.substr(3) : text; }
 
 uint8_t largestBlockPercent(const MemoryBudget::HeapSnapshot& heap) {
   if (heap.freeHeap == 0) {
@@ -697,16 +691,6 @@ bool releaseReaderSdFontCachesForLowMemory(const GfxRenderer& renderer, const ch
           before.maxAllocHeap, after.maxAllocHeap);
 #endif
   return true;
-}
-
-int clampPercent(int percent) {
-  if (percent < 0) {
-    return 0;
-  }
-  if (percent > 100) {
-    return 100;
-  }
-  return percent;
 }
 
 bool isSnippetWhitespace(const std::string& word) {
@@ -1927,7 +1911,7 @@ void EpubReaderActivity::loop() {
       isBookCompleted = stats.isCompleted;
       bookProgress = getCurrentBookProgressPercent();
     }
-    const int bookProgressPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+    const int bookProgressPercent = ReaderUtils::clampPercent(static_cast<int>(bookProgress + 0.5f));
 
     pauseReadingPaceTimer("reader_menu");
     startActivityForResult(
@@ -2357,7 +2341,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         RenderLock lock(*this);
         bookProgress = getCurrentBookProgressPercent();
       }
-      const int initialPercent = clampPercent(static_cast<int>(bookProgress + 0.5f));
+      const int initialPercent = ReaderUtils::clampPercent(static_cast<int>(bookProgress + 0.5f));
       pauseReadingPaceTimer("percent_selection");
       startActivityForResult(
           std::make_unique<EpubReaderPercentSelectionActivity>(renderer, mappedInput, initialPercent),

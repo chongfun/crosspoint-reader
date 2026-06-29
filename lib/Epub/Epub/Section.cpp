@@ -644,27 +644,6 @@ void Section::resetForSpine(const int newSpineIndex) {
 
 // ensureSearchHeader() and scanForward() are defined in SectionSearch.cpp.
 
-std::optional<uint16_t> Section::getCachedPageCount() {
-  ScopedSectionFile sf(file, filePath);
-  if (!sf.ok()) {
-    return std::nullopt;
-  }
-
-  const uint32_t fileSize = file.size();
-  if (fileSize < HEADER_SIZE) {
-    return std::nullopt;
-  }
-
-  if (!file.seek(PAGE_COUNT_POS)) {
-    return std::nullopt;
-  }
-  uint16_t count;
-  if (!serialization::tryReadPod(file, count)) {
-    return std::nullopt;
-  }
-  return count;
-}
-
 std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) {
   ScopedSectionFile sf(file, filePath);
   if (!sf.ok()) {

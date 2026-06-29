@@ -125,9 +125,6 @@ class Section {
                          SectionBuildOptions buildOptions = {});
   std::unique_ptr<Page> loadPageFromSectionFile();
 
-  // Get the page count from the section cache file without fully loading it.
-  std::optional<uint16_t> getCachedPageCount();
-
   // Reuse this Section object for another spine item without another heap
   // allocation. Intended for sequential, book-wide operations such as search.
   void resetForSpine(int newSpineIndex);

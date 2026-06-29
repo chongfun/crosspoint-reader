@@ -57,7 +57,7 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
                 searchHighlightCharToWordIndex.size() >= searchHighlightCharToWordIndex.capacity()) {
               return false;
             }
-            searchHighlightPageText.push_back((c >= 'A' && c <= 'Z') ? (c + 32) : c);
+            searchHighlightPageText.push_back(static_cast<char>(epub::asciiToLower(static_cast<uint8_t>(c))));
             searchHighlightCharToWordIndex.push_back(pageWordIndex);
           }
           return true;
