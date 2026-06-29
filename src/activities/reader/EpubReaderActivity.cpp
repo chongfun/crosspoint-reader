@@ -1070,29 +1070,6 @@ ReaderViewport calculateReaderViewport(GfxRenderer& renderer, const bool automat
   return viewport;
 }
 
-// Pick a non-colliding destination path inside /Read/ for a finished book.
-// Mirrors the suffixing scheme used elsewhere: "name.epub" -> "name (2).epub", etc.
-std::string buildReadFolderDestination(const std::string& srcPath) {
-  const size_t lastSlash = srcPath.rfind('/');
-  const std::string filename = (lastSlash != std::string::npos) ? srcPath.substr(lastSlash + 1) : srcPath;
-
-  Storage.mkdir(READ_FOLDER);
-  std::string dstPath = std::string(READ_FOLDER) + "/" + filename;
-  if (!Storage.exists(dstPath.c_str())) {
-    return dstPath;
-  }
-
-  const size_t dotPos = filename.rfind('.');
-  const std::string base = (dotPos != std::string::npos) ? filename.substr(0, dotPos) : filename;
-  const std::string ext = (dotPos != std::string::npos) ? filename.substr(dotPos) : "";
-  int suffix = 2;
-  do {
-    dstPath = std::string(READ_FOLDER) + "/" + base + " (" + std::to_string(suffix) + ")" + ext;
-    suffix++;
-  } while (Storage.exists(dstPath.c_str()) && suffix < 100);
-  return dstPath;
-}
-
 }  // namespace
 
 uint8_t EpubReaderActivity::loadBookRenderMode(const std::string& filePath) {
