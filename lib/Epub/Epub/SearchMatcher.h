@@ -8,18 +8,6 @@ class SearchMatcher {
  public:
   static constexpr size_t MAX_QUERY_BYTES = 64;
 
-  std::array<uint8_t, MAX_QUERY_BYTES> pattern{};
-  std::array<uint8_t, MAX_QUERY_BYTES> prefix{};
-  size_t length = 0;
-  size_t matched = 0;
-  std::array<uint8_t, MAX_QUERY_BYTES> matchByteWidths{};
-
-  uint32_t utf8State = 0;
-  uint32_t utf8Codepoint = 0;
-  uint8_t utf8BytesConsumed = 0;
-  uint8_t pendingSeparatorBytes = 0;
-  uint8_t widthBufferHead = 0;
-
   // Single source of truth for whether a query is usable for search: non-empty,
   // not all-whitespace, and within the byte limit. The UI validates with this
   // before launching a search.
@@ -45,6 +33,20 @@ class SearchMatcher {
     widthBufferHead = 0;
   }
 
+  bool hasPartialMatch() const { return matched > 0; }
+
  private:
+  std::array<uint8_t, MAX_QUERY_BYTES> pattern{};
+  std::array<uint8_t, MAX_QUERY_BYTES> prefix{};
+  size_t length = 0;
+  size_t matched = 0;
+  std::array<uint8_t, MAX_QUERY_BYTES> matchByteWidths{};
+
+  uint32_t utf8State = 0;
+  uint32_t utf8Codepoint = 0;
+  uint8_t utf8BytesConsumed = 0;
+  uint8_t pendingSeparatorBytes = 0;
+  uint8_t widthBufferHead = 0;
+
   static size_t normalizeSearchQuery(std::string_view query, std::array<uint8_t, MAX_QUERY_BYTES>& out);
 };

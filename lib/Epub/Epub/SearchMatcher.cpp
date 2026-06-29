@@ -110,11 +110,14 @@ bool SearchMatcher::compile(const std::string_view query) {
   length = 0;
   reset();
 
-  if (!isValidSearchQuery(query)) {
+  if (query.empty() || query.size() > MAX_QUERY_BYTES) {
     return false;
   }
 
   length = normalizeSearchQuery(query, pattern);
+  if (length == 0) {
+    return false;
+  }
 
   for (size_t i = 1, m = 0; i < length; ++i) {
     const uint8_t value = pattern[i];
