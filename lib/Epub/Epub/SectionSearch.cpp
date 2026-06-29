@@ -108,9 +108,11 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     return {ScanStatus::IoError, -1};
   }
   if (file.read(searchScan.lutBuf.get(), lutBytes) != lutBytes) {
+    // The LUT range was already validated against fileSize above, so a short
+    // read here is an I/O failure, not a corrupt cache.
     LOG_ERR("SCT", "Search failed: could not read page LUT entries");
     closeSearchState();
-    return {ScanStatus::CorruptCache, -1};
+    return {ScanStatus::IoError, -1};
   }
 
   // Sequentially read the text records
@@ -120,10 +122,13 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     // searchTextOffset is the 2nd uint32_t in the LUT entry
     memcpy(&searchTextOffset, searchScan.lutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
     // Text records (each a u32 length prefix + bytes) live in the page-record
-    // region, which ends where the page LUT begins. Bound against lutOffset, not
-    // just fileSize, so a corrupt offset pointing into the LUT or trailer is
-    // rejected rather than read as text. (lutOffset <= fileSize, validated above.)
-    if (searchTextOffset > lutOffset || lutOffset - searchTextOffset < sizeof(uint32_t)) {
+    // region, which starts after the fixed header and ends where the page LUT
+    // begins. Bound below by HEADER_SIZE and above by lutOffset (not just
+    // fileSize) so a corrupt offset pointing into the header, the LUT, or the
+    // trailer is rejected rather than read as text. (lutOffset <= fileSize,
+    // validated above.)
+    if (searchTextOffset < HEADER_SIZE || searchTextOffset > lutOffset ||
+        lutOffset - searchTextOffset < sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record offset");
       closeSearchState();
       return {ScanStatus::CorruptCache, -1};
