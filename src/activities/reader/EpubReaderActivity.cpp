@@ -4136,6 +4136,11 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
   if (section && (currentSpineIndex != lastSearchResultSpine || section->currentPage != lastSearchResultPage)) {
+    if (lastSearchResultSpine != -1 || lastSearchResultPage != -1) {
+      // Left the search-result page: the highlight is no longer drawn, so free
+      // the highlighter's scratch buffers until the next search.
+      searchHighlighter.release();
+    }
     lastSearchResultSpine = -1;
     lastSearchResultPage = -1;
   }

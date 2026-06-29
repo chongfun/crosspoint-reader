@@ -24,6 +24,8 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
     return;
   }
 
+  ensureBuffersReserved();
+
   // 2. Normalize the page text and map characters to word indices
   searchHighlightPageText.clear();
   searchHighlightCharToWordIndex.clear();
@@ -91,4 +93,22 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
                                         renderer.fillRect(wordX, wordY, wordW, wordH, true);
                                         renderer.drawText(fontId, wordX, wordY, visibleText, false, textStyle);
                                       });
+}
+
+void SearchHighlighter::ensureBuffersReserved() const {
+  if (searchHighlightPageText.capacity() > 0) {
+    return;
+  }
+  searchHighlightPageText.reserve(4096);
+  searchHighlightCharToWordIndex.reserve(4096);
+  searchHighlightMatchRanges.reserve(128);
+}
+
+void SearchHighlighter::release() {
+  searchHighlightPageText.clear();
+  searchHighlightPageText.shrink_to_fit();
+  searchHighlightCharToWordIndex.clear();
+  searchHighlightCharToWordIndex.shrink_to_fit();
+  searchHighlightMatchRanges.clear();
+  searchHighlightMatchRanges.shrink_to_fit();
 }
