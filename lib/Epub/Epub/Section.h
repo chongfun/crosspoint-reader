@@ -22,6 +22,23 @@ struct SectionBuildOptions {
 };
 
 class Section {
+ public:
+  // Why a forward search scan stopped. Distinguishes a structurally corrupt
+  // cache (which rebuilding can repair) from a transient I/O failure or OOM
+  // (which it cannot), so the caller does not delete a valid cache over a
+  // momentary glitch.
+  enum class ScanStatus : uint8_t {
+    Match,         // a match was found; `page` holds the page index
+    NoMatch,       // the requested range was scanned with no match (or was empty)
+    CorruptCache,  // structurally invalid cache data; a rebuild may help
+    IoError,       // seek/open failure or OOM; rebuilding will not help
+  };
+  struct ScanResult {
+    ScanStatus status = ScanStatus::NoMatch;
+    int page = -1;  // valid only when status == Match
+  };
+
+ private:
   std::shared_ptr<Epub> epub;
   int spineIndex;
   GfxRenderer& renderer;
@@ -65,8 +82,9 @@ class Section {
   // open; returns false on seek/read failure.
   bool readPageLutOffset(uint32_t& lutOffset);
   // Lazily open the scan file and cache its size and page-LUT offset. Returns
-  // false on open failure or a truncated/corrupt header.
-  bool ensureSearchHeader();
+  // false on failure, setting failureStatus to IoError for an open/seek/read
+  // failure or CorruptCache for a truncated/malformed header.
+  bool ensureSearchHeader(ScanStatus& failureStatus);
   void closeSearchState();
   // Rewrite filePath's numeric suffix in place for the current spineIndex,
   // reusing the buffer (no per-spine string allocation, no std::to_string).
@@ -108,21 +126,6 @@ class Section {
   // Reuse this Section object for another spine item without another heap
   // allocation. Intended for sequential, book-wide operations such as search.
   void resetForSpine(int newSpineIndex);
-
-  // Why a forward search scan stopped. Distinguishes a structurally corrupt
-  // cache (which rebuilding can repair) from a transient I/O failure or OOM
-  // (which it cannot), so the caller does not delete a valid cache over a
-  // momentary glitch.
-  enum class ScanStatus : uint8_t {
-    Match,         // a match was found; `page` holds the page index
-    NoMatch,       // the requested range was scanned with no match (or was empty)
-    CorruptCache,  // structurally invalid cache data; a rebuild may help
-    IoError,       // seek/open failure or OOM; rebuilding will not help
-  };
-  struct ScanResult {
-    ScanStatus status = ScanStatus::NoMatch;
-    int page = -1;  // valid only when status == Match
-  };
 
   // Search forward through cached section pages from `startPage` up to `endPage`,
   // batching LUT reads and streaming text records sequentially. Returns Match
