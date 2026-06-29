@@ -3389,6 +3389,10 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
     if (!result.isCancelled) {
       const auto& match = std::get<ProgressChangeResult>(result.data);
       RenderLock lock(*this);
+      // A search can be launched while a footnote preview is open. Clear the
+      // preview state before applying the destination so render() shows the
+      // matched EPUB page instead of reopening the footnote preview.
+      clearFootnotePreviewState();
       currentSpineIndex = match.spineIndex;
       nextPageNumber = match.page;
       section.reset();
