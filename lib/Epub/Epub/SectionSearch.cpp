@@ -119,7 +119,11 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     uint32_t searchTextOffset = 0;
     // searchTextOffset is the 2nd uint32_t in the LUT entry
     memcpy(&searchTextOffset, searchScan.lutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
-    if (searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
+    // Text records (each a u32 length prefix + bytes) live in the page-record
+    // region, which ends where the page LUT begins. Bound against lutOffset, not
+    // just fileSize, so a corrupt offset pointing into the LUT or trailer is
+    // rejected rather than read as text. (lutOffset <= fileSize, validated above.)
+    if (searchTextOffset > lutOffset || lutOffset - searchTextOffset < sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record offset");
       closeSearchState();
       return {ScanStatus::CorruptCache, -1};
@@ -133,7 +137,7 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
 
     uint32_t remaining = 0;
     if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining) ||
-        remaining > fileSize - searchTextOffset - sizeof(uint32_t)) {
+        remaining > lutOffset - searchTextOffset - sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record length");
       closeSearchState();
       return {ScanStatus::CorruptCache, -1};
