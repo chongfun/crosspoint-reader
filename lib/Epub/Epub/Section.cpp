@@ -587,7 +587,7 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
   }
 
   // Validate LUT-derived offsets against the file before trusting them (mirrors
-  // pageContainsText). Compute in 64-bit so a corrupt (huge) lutOffset cannot
+  // scanForward). Compute in 64-bit so a corrupt (huge) lutOffset cannot
   // wrap the uint32 sum into a small in-bounds value.
   if (lutOffset == 0 || currentPage < 0 || static_cast<uint32_t>(currentPage) >= headerPageCount) {
     LOG_ERR("SCT", "Invalid page LUT request");

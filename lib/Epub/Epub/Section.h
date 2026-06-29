@@ -37,7 +37,7 @@ class Section {
 
   // Cached section-header state for the search scan: the file size and page-LUT
   // offset are invariant per section, so they are read once when the scan file
-  // is lazily opened and reused for every pageContainsText() call. Invalidated
+  // is lazily opened and reused for every scanForward() call. Invalidated
   // by resetForSpine() (which also closes the file).
   bool searchHeaderReady = false;
   uint32_t searchFileSize = 0;

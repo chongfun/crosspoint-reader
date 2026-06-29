@@ -81,7 +81,7 @@ The responsibilities are split as follows:
   before yielding, and distinguishes `Searching`, `NotFound`, and `Error`.
 - `Page::serializeSearchText()` writes compact searchable text while the page
   already exists during layout.
-- `Section::pageContainsText()` searches one record without deserializing a
+- `Section::scanForward()` scans page text records without deserializing a
   `Page` or allocating word vectors.
 
 All SD access continues through `HalStorage` and `HalFile`; search does not
@@ -165,7 +165,7 @@ remeasure them when the implementation or toolchain changes.
 
 ## Matching algorithm
 
-`Section::pageContainsText()` uses Knuth-Morris-Pratt matching because it:
+`Section::scanForward()` uses Knuth-Morris-Pratt matching because it:
 
 - scans the SD record once
 - handles matches that cross 64-byte read-buffer boundaries
