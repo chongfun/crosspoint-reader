@@ -224,7 +224,7 @@ void EpubReaderSearchActivity::scanNextPage() {
   // Chunk scan to 50 pages at a time to yield to the main render/input loop
   endPage = std::min<int>(endPage, currentPage + 50);
 
-  const SearchMatcher matcherBeforeChunk = matcher;
+  matcherBeforeChunk = matcher;
   auto result = section.scanForward(currentPage, endPage, matcher);
 
   // A transient I/O failure or OOM is not corruption: surface the error without

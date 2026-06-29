@@ -53,6 +53,11 @@ class EpubReaderSearchActivity final : public Activity {
   Section section;
   std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> query{};
   SearchMatcher matcher;
+  // Snapshot of `matcher` taken at the start of each scanned chunk so a
+  // corrupt-cache rebuild can roll the carried match state back and rescan.
+  // A reused member rather than a per-chunk stack local (~0.5 KB) to keep the
+  // cooperative scan loop's stack small.
+  SearchMatcher matcherBeforeChunk;
   SearchRoute route;
   int currentSpineIndex;
   int currentPage;
