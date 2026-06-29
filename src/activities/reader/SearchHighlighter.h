@@ -29,4 +29,12 @@ class SearchHighlighter {
   mutable std::string searchHighlightPageText;
   mutable std::vector<uint16_t> searchHighlightCharToWordIndex;
   mutable std::vector<std::pair<uint16_t, uint16_t>> searchHighlightMatchRanges;
+
+  // Memo of the (page, query) the cached match ranges were computed for, so
+  // repeated renders of the same search-result page (status-bar refreshes, etc.)
+  // reuse the ranges instead of re-reading the previous page from SD and
+  // recompiling the matcher each frame. Invalidated by release().
+  mutable bool searchHighlightComputed = false;
+  mutable int searchHighlightCachedPage = -1;
+  mutable std::string searchHighlightCachedQuery;
 };
