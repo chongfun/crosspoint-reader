@@ -56,7 +56,7 @@ EpubReaderSearchActivity::EpubReaderSearchActivity(GfxRenderer& renderer, Mapped
       viewportHeight(viewportHeight) {
   bool ok = false;
   if (query) {
-    const size_t len = strlen(query);
+    const size_t len = strnlen(query, SearchMatcher::MAX_QUERY_BYTES + 1);
     if (len <= SearchMatcher::MAX_QUERY_BYTES) {
       strncpy(this->query.data(), query, this->query.size() - 1);
       this->query[this->query.size() - 1] = '\0';
