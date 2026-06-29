@@ -4574,8 +4574,9 @@ void EpubReaderActivity::drawSearchHighlights(const Page& page, const int fontId
   }
 
   for (size_t charIndex = 0; charIndex < searchHighlightPageText.size(); ++charIndex) {
-    if (matcher.feed(searchHighlightPageText[charIndex])) {
-      size_t startIdx = (charIndex + 1 >= matcher.length) ? (charIndex + 1 - matcher.length) : 0;
+    int matchBytes = matcher.feed(searchHighlightPageText[charIndex]);
+    if (matchBytes > 0) {
+      size_t startIdx = (charIndex + 1 >= static_cast<size_t>(matchBytes)) ? (charIndex + 1 - matchBytes) : 0;
       size_t endIdx = charIndex;
       if (startIdx < searchHighlightCharToWordIndex.size() && endIdx < searchHighlightCharToWordIndex.size()) {
         if (searchHighlightMatchRanges.size() < searchHighlightMatchRanges.capacity()) {

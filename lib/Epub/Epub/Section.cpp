@@ -757,7 +757,7 @@ std::optional<int> Section::scanForward(uint16_t startPage, uint16_t endPage, Se
       remaining -= chunkSize;
 
       for (size_t j = 0; j < chunkSize; ++j) {
-        if (matcher.feed(buffer[j])) {
+        if (matcher.feed(buffer[j]) > 0) {
           return static_cast<int>(startPage + i);
         }
       }
