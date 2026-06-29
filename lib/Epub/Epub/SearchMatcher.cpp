@@ -165,18 +165,22 @@ int SearchMatcher::feed(uint8_t c) {
     return 0;
   }
 
-  uint8_t totalBytesForThisChar = utf8BytesConsumed + pendingSeparatorBytes;
-  pendingSeparatorBytes = 0;
-
   const uint8_t value = static_cast<uint8_t>(norm);
-
-  // Track raw byte width of this valid character in the circular buffer
-  matchByteWidths[widthBufferHead] = totalBytesForThisChar;
-  widthBufferHead = (widthBufferHead + 1) % MAX_QUERY_BYTES;
 
   while (matched > 0 && value != pattern[matched]) {
     matched = prefix[matched - 1];
   }
+
+  if (matched == 0) {
+    pendingSeparatorBytes = 0;
+  }
+
+  uint8_t totalBytesForThisChar = utf8BytesConsumed + pendingSeparatorBytes;
+  pendingSeparatorBytes = 0;
+
+  // Track raw byte width of this valid character in the circular buffer
+  matchByteWidths[widthBufferHead] = totalBytesForThisChar;
+  widthBufferHead = (widthBufferHead + 1) % MAX_QUERY_BYTES;
   if (value == pattern[matched]) {
     ++matched;
     if (matched == length) {
