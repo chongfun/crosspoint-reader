@@ -141,8 +141,12 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     }
 
     uint32_t remaining = 0;
-    if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining) ||
-        remaining > lutOffset - searchTextOffset - sizeof(uint32_t)) {
+    if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining)) {
+      LOG_ERR("SCT", "Search failed: could not read text record length");
+      closeSearchState();
+      return {ScanStatus::IoError, -1};
+    }
+    if (remaining > lutOffset - searchTextOffset - sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record length");
       closeSearchState();
       return {ScanStatus::CorruptCache, -1};
@@ -183,7 +187,7 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       if (file.read(buffer.data(), chunkSize) != chunkSize) {
         LOG_ERR("SCT", "Search failed: truncated text record");
         closeSearchState();
-        return {ScanStatus::CorruptCache, -1};
+        return {ScanStatus::IoError, -1};
       }
       remaining -= chunkSize;
 
