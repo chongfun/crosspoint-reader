@@ -47,8 +47,8 @@ The user-visible behavior is intentionally narrow:
   of the scan has completed, measured from where the search began (so it rises
   from 0% to 100% over the whole scan even when the search starts mid-book)
 
-The result is page-granular. The reader opens the matching page and shows a
-short confirmation popup; individual glyphs are not highlighted.
+The result is page-granular. The reader opens the matching page and highlights
+the matched words on the page.
 
 ## Component flow
 
@@ -65,7 +65,7 @@ flowchart TD
     H --> I{"KMP match?"}
     I -->|"No"| J["Advance one page; then spine; wrap once"]
     J --> F
-    I -->|"Yes"| K["Return ProgressChangeResult (spine, page)"]
+    I -->|"Yes"| K["Return ProgressChangeResult (spine, page, match byte span)"]
     K --> L["Reader reloads that page from SD cache"]
 ```
 
@@ -73,12 +73,17 @@ The responsibilities are split as follows:
 
 - `EpubReaderMenuActivity` exposes the existing translated `Search` command.
 - `EpubReaderActivity` owns query history and coordinates the keyboard, search
-  activity, reader position, and result popup.
-- `EpubReaderSearchActivity` is a small state machine that scans one page per
-  main-loop iteration and distinguishes `Searching`, `NotFound`, and `Error`.
+  activity, reader position, and result highlighting.
+- `SearchHighlighter` encapsulates the transient on-page text highlighting logic.
+  It is a pure consumer of the byte span the scan reports for the matched page:
+  it maps that span to the page's words and paints them, without re-running the
+  matcher, re-normalizing text, or re-reading the cache, so it holds no buffers.
+- `EpubReaderSearchActivity` is a small state machine whose `scanNextPage()`
+  scan loop scans a bounded chunk of up to 50 pages per main-loop iteration
+  before yielding, and distinguishes `Searching`, `NotFound`, and `Error`.
 - `Page::serializeSearchText()` writes compact searchable text while the page
   already exists during layout.
-- `Section::pageContainsText()` searches one record without deserializing a
+- `Section::scanForward()` scans page text records without deserializing a
   `Page` or allocating word vectors.
 
 All SD access continues through `HalStorage` and `HalFile`; search does not
@@ -86,15 +91,17 @@ reach into SdFat directly.
 
 Implementation entry points:
 
-- reader orchestration: [`EpubReaderActivity.cpp`](../../src/activities/reader/EpubReaderActivity.cpp)
-- cooperative scan activity: [`EpubReaderSearchActivity.cpp`](../../src/activities/reader/EpubReaderSearchActivity.cpp)
-- cache creation and streaming matcher: [`Section.cpp`](../../lib/Epub/Epub/Section.cpp)
-- per-page text serialization: [`Page.cpp`](../../lib/Epub/Epub/Page.cpp)
+- reader orchestration: [`EpubReaderActivity.cpp`](../src/activities/reader/EpubReaderActivity.cpp)
+- on-page highlighting: [`SearchHighlighter.cpp`](../src/activities/reader/SearchHighlighter.cpp)
+- cooperative scan activity: [`EpubReaderSearchActivity.cpp`](../src/activities/reader/EpubReaderSearchActivity.cpp)
+- cache creation: [`Section.cpp`](../lib/Epub/Epub/Section.cpp)
+- forward scan over the cache: [`SectionSearch.cpp`](../lib/Epub/Epub/SectionSearch.cpp) (`Section::scanForward`/`ensureSearchHeader`, split out of `Section.cpp`)
+- per-page text serialization: [`PageSearch.cpp`](../lib/Epub/Epub/PageSearch.cpp) (`Page::serializeSearchText`, split out of `Page.cpp`)
+
 
 ## Section cache format
 
-Search extends `sections/<spine>.bin` to version 28. Each serialized page is
-immediately followed by one search record:
+The search capability is fully integrated into the version 28 section cache format. Each serialized page is immediately followed by one search record:
 
 ```text
 Page
@@ -102,7 +109,8 @@ u32 searchTextLength
 u8  searchText[searchTextLength]
 ```
 
-The page LUT now stores two offsets per page:
+The on-disk page LUT stores two offsets per page — an 8-byte stride
+(`PAGE_LUT_ENTRY_SIZE`):
 
 ```text
 u32 pageOffset
@@ -111,16 +119,17 @@ u32 searchTextOffset
 
 `pageOffset` preserves normal rendering behavior. `searchTextOffset` lets the
 matcher seek directly to the bounded text record without decoding page
-elements, images, footnotes, styles, or word-position vectors.
+elements, images, footnotes, styles, or word-position vectors. (The paragraph
+and list-item indices the reader uses for position restore are written to
+separate LUTs, not this one.)
 
 The text record contains the rendered page's words in page-element order,
 joined by single ASCII spaces. Images and styling metadata are excluded. The
 SD cost is therefore approximately one additional copy of rendered UTF-8 text,
-plus 8 bytes per page: a 4-byte text length and a 4-byte LUT offset.
+plus 8 bytes per page: the record's 4-byte length prefix and the 4-byte
+`searchTextOffset` added to each page LUT entry.
 
-Version 28 invalidates older section caches automatically. They are rebuilt on
-demand using the normal cache-busting path. The book's EPUB source is never
-modified.
+Additionally, version 28 stores all layout settings (including fonts, line compression, extra paragraph spacing, paragraph alignment, hyphenation, embedded CSS, image rendering, and focus reading) in the section header. This ensures that the search-time layout accurately matches the reader's layout settings, preventing pagination misalignment. Version 28 invalidates older section caches automatically; they are rebuilt on demand using the normal cache-busting path. The book's EPUB source is never modified.
 
 ## Memory budget
 
@@ -128,10 +137,10 @@ The steady page-scan path has fixed memory use:
 
 | Item | Storage | Size | Lifetime |
 | --- | --- | ---: | --- |
-| Saved query | Inline reader/activity arrays | 65 bytes each | Reader/search activity |
-| Compiled query (normalized pattern + KMP table) | Inline search activity arrays | 132 bytes | Search activity (built once) |
+| Saved query | Inline reader and activity arrays | 65 bytes each | Reader / search activity |
 | SD read buffer | Stack | 64 bytes | One page scan |
-| Search activity object | Heap, nothrow | 444 bytes in the target build | Search activity |
+| Search matcher (KMP pattern + prefix table, plus per-codepoint match-width tracking) | Inline in the activity | 632 bytes | Search activity |
+| Search activity object (includes two matchers: the live one and a corrupt-cache rollback snapshot) | Heap, nothrow | ~1,720 bytes | Search activity |
 | Page LUT reservation | Heap | 1,536 bytes | Uncached section layout only |
 
 The display's 52,272-byte framebuffer is not a search allocation. The shared
@@ -144,22 +153,26 @@ The search activity owns one reusable `Section`. `Section::resetForSpine()`
 changes its spine and cache path in place, avoiding a new/delete cycle for each
 chapter. Before the activity is allocated, the reader releases its current
 `Section` and deserialized page graph. This avoids keeping the normal reader
-working set and the search working set live together.
+working set and the search working set live together. Result highlighting is
+delegated to `SearchHighlighter`, which is stateless: the scan reports the
+matched byte span, and the highlighter maps it to words at render time, so it
+needs no buffers of its own.
 
 The 1,536-byte LUT reservation is not a new steady-state index. Section layout
 already needs a data-dependent page LUT; reserving 128 entries once avoids
 repeated allocate-copy-free growth. Chapters larger than that remain supported
 and may grow the vector.
 
-At implementation time, the measured `default` build had unchanged static RAM
-usage at 101,220 bytes. Flash usage increased by 8,174 bytes, from 5,225,869 to
-5,234,043 bytes, for the search behavior, cache handling, UI, and translated
-fallback strings. These are build snapshots rather than permanent budgets;
+The search feature adds no static RAM: a `default` build measured 102,516 bytes
+of static RAM both with the feature and on its pre-search base (`main`). Flash
+grew by about 14,084 bytes in that same comparison (6,344,661 to 6,358,745
+bytes) for the search behavior, cache handling, on-page highlighting, UI, and
+translated strings. These are build snapshots rather than permanent budgets;
 remeasure them when the implementation or toolchain changes.
 
 ## Matching algorithm
 
-`Section::pageContainsText()` uses Knuth-Morris-Pratt matching because it:
+`Section::scanForward()` uses Knuth-Morris-Pratt matching because it:
 
 - scans the SD record once
 - handles matches that cross 64-byte read-buffer boundaries
@@ -167,46 +180,87 @@ remeasure them when the implementation or toolchain changes.
 - needs only a prefix table bounded by the 64-byte query limit
 
 ASCII `A-Z` bytes are folded to lowercase during comparison without copying the
-query or page. Other UTF-8 bytes are compared exactly. Rendered EPUB words are
-already NFC-composed by the layout pipeline, but the search path does not
-perform general Unicode normalization or case folding.
+query or page. The matcher also performs lightweight diacritic stripping and multi-character
+folding (e.g., `ß` to `ss`, `æ` to `ae`, `é` to `e`) for Latin characters and common
+typographic ligatures. This is implemented as a sequence of packed logic gates in instruction
+flash, requiring zero RAM overhead. Rendered EPUB words are already NFC-composed by the layout
+pipeline. General full-Unicode normalization is not performed.
 
-ASCII spaces and hyphens are treated as insignificant on both sides:
-`normalizeSearchQuery()` drops them from the query (and the KMP prefix table is
-built over that normalized form), and the page scan skips the same bytes in the
-record. This lets a query match across the artifacts the rendered text
-introduces — most importantly a word the layout split across a line break,
-which is stored as `"<frag>-"` plus a space plus `"<frag>"` — and makes spacing
-differences between the query and the rendered tokens irrelevant. The
-consequence is that matching is space- and hyphen-agnostic: `"the cat"`,
-`"thecat"`, and `"the-cat"` are equivalent, which can occasionally match across
-an unrelated word boundary. This is a deliberate extension of the matcher's
-existing substring behavior (a query already matches inside a longer word) and
-favors finding a half-remembered passage — e.g. a location last read on another
-device or in print — over exact-span precision.
+Hyphens are insignificant on both sides, but spaces are significant. Hyphens are
+dropped from the query (the KMP prefix table is built over that normalized form)
+and skipped in the record, so a hyphenated word matches its unhyphenated query —
+both a hard hyphen (`"mother-in-law"` matches `"motherinlaw"`) and a layout
+line-break hyphen, which is stored as `"<frag>-"` plus a space plus `"<frag>"`.
+Spaces, by contrast, are matched: a query without a space cannot run two words
+together, so it can no longer start in the middle of one word and end in the
+middle of the next (`"heran"` does not match `"the rang"`). The one exception is
+a space immediately following a hyphen — the separator a line-break hyphenation
+leaves between the two halves — which is dropped so the halves rejoin
+(`"international"` matches the stored `"inter- national"`). Runs of spaces collapse
+and leading/trailing spaces are trimmed so query spacing lines up with the
+single-space record.
+
+Matches are whole-word: a hit must be delimited by non-word characters on both
+sides, where a word character is `[a-z0-9]` after folding and everything else
+(spaces, punctuation, the record's edges) is a boundary. So `"cat"` no longer
+matches inside `"category"` or `"scat"`, but it still matches `"the cat"`,
+`"(cat)"`, and `"cat."`. The boundary is only enforced on an edge that is itself
+a word character, mirroring a regex `\b`, so a query like `"etc."` is not forced
+to sit before a non-word character. Because the trailing boundary can only be
+seen on the character *after* a match, a completed match is held as tentative
+until the next significant character (a word char rejects it, a boundary
+confirms it) or until the record ends — the record stores whole space-separated
+words with no trailing separator, so its end is itself a word boundary unless a
+line-break hyphen carries the final word onto the next page. Dropped characters
+(hyphens, unmapped codepoints) stay transparent for boundary purposes, so the
+hyphenation-aware joins above are unaffected.
+
+Codepoints with no ASCII or Latin folding (CJK, Cyrillic, Greek, unmapped
+symbols, etc.) normalize to nothing and are dropped on **both** sides, like
+hyphens. So `"a你b"` is treated as `"ab"` on the query side and the page side
+alike, and a search for `"ab"` will match it. This is the same fuzzy class as the
+hyphen bridging above, not a separate behavior, and it is intentional rather than
+a missing boundary check. The needle is an ASCII-only
+`uint8_t` array, so an unsupported codepoint can never appear *in* a pattern;
+treating it as a hard boundary instead of dropping it would not make `"a你b"`
+matchable — it would only stop the text `"a你b"` from matching its own exact
+query, regressing search over any non-Latin book. Dropping is therefore the
+least-surprising option available within the ASCII-needle constraint.
 
 The matcher's KMP partial-match length is carried across consecutive pages of
 the same spine, so a query split across a *page* boundary still matches — for
 example a word the layout hyphenated at the foot of one page (`"…inter-"`) and
 continued at the top of the next (`"national…"`), or any phrase that straddles
-the break. The carried state is reset at every reading-order discontinuity (the
-scan's first page, a spine/chapter change, the single wrap, and any image-only
-page with an empty text record), so it never bridges non-contiguous text. A
-cross-page match is reported on the page where it *completes* (the second page),
-which is where the reader opens.
+the break. Because the record stores no separator between pages, the scan feeds
+an explicit word-boundary space before each page's content; this makes a page
+boundary behave like an in-page word boundary (a spaceless query cannot run two
+pages' words together) while still letting a page-final line-break hyphen rejoin
+its continuation (the space after the hyphen is dropped). The injected space is
+not part of the record, so it is not counted in the reported match offsets. The
+carried state is reset at every reading-order discontinuity (a spine/chapter
+change, the single wrap, and any image-only page with an empty text record), so
+it never bridges non-contiguous text. A cross-page match is reported on the page
+where it *completes* (the second page), which is where the reader opens.
 
-The return type is `std::optional<bool>`:
+The return type is `Section::ScanResult`, a `Section::ScanStatus` plus a `page`
+index and the match's byte span (all valid only on `Match`):
 
-- `true`: the page contains the query
-- `false`: the cache record is valid and does not contain the query
-- `std::nullopt`: invalid input, I/O failure, or corrupt/truncated cache data
+- `ScanStatus::Match`: a match was found; `page` holds the page index.
+- `ScanStatus::NoMatch`: the requested range was scanned (or was empty) with no
+  match. The cache is valid.
+- `ScanStatus::CorruptCache`: structurally invalid cache data (bad LUT offset,
+  truncated record, etc.). A rebuild may repair it.
+- `ScanStatus::IoError`: a seek/open failure or OOM. Rebuilding will not help.
 
-This distinction lets an ordinary miss advance to the next page while a cache
-failure moves the activity to its translated error state.
-On the first cache failure in a spine, the activity closes and removes that
-section cache, rebuilds it, restores the matcher state from the start of the
-failed page, and retries once. A second failure removes the cache again and
-surfaces the error rather than entering an unbounded rebuild loop.
+This three-way distinction lets an ordinary `NoMatch` advance to the next page
+while a failure moves the activity to its translated error state, and — crucially
+— it separates *repairable* cache corruption from *transient* I/O failures so the
+caller does not delete a valid cache over a momentary glitch. On the first
+`CorruptCache` in a spine, the activity closes and removes that section cache,
+rebuilds it, restores the matcher state from the start of the failed page, and
+retries once; a second `CorruptCache` removes the cache again and surfaces the
+error rather than entering an unbounded rebuild loop. An `IoError` is surfaced
+without deleting the cache, since a rebuild cannot fix it.
 
 ### Alternatives considered
 
@@ -278,9 +332,9 @@ interaction through the same menu command.
 
 Rejected for the initial implementation. The device is single-core, SdFat
 access must remain serialized, and a task would add stack and activity-lifetime
-coordination. The cooperative activity scans one cached page per loop iteration,
-keeps cancellation responsive between pages, and prevents automatic sleep while
-searching.
+coordination. The cooperative activity scans a bounded chunk of up to 50 cached
+pages per loop iteration, keeps cancellation responsive between chunks, and
+prevents automatic sleep while searching.
 
 ## Accepted trade-offs and limitations
 
@@ -292,17 +346,21 @@ searching.
   page.
 - Matches are page-level. Repeating a query skips the rest of the current page,
   so multiple occurrences on one page are not individually navigable.
-- There is no match highlighting or result list.
-- Case-insensitive matching is ASCII-only. Non-ASCII case variants must match
-  exactly.
+- There is no match result list. The matching page highlights the specific match the scan found (the one the result navigates to), not every occurrence of the query on that page.
+- Search match highlighting uses a high-contrast inverted style (solid black background with white/light text) to make matches immediately stand out on the screen.
+- Highlighting is transient and scoped: it is only rendered on the initial search-match result page. Turning the page or navigating away automatically clears the highlight state so it does not persist on subsequent reads.
+- Highlight placement is producer-driven: `Section::scanForward()` reports the match's byte span within the page's search-text record, and `SearchHighlighter` maps that span to the page's words at render time. The match is located once by the scan rather than re-derived by a second matcher, so the highlighter never re-normalizes text or re-reads the cache. A match that began on the previous page reports a span clamped to the page start, so its visible tail still highlights without re-scanning the previous page.
+- Case-insensitive matching and diacritic folding are supported for ASCII and common Latin characters. Codepoints outside the supported Latin set (CJK, Cyrillic, Greek, unmapped symbols) normalize to nothing and are ignored on both sides during matching rather than requiring an exact match (see Matching algorithm), so they neither help nor block a match.
 - Search text is reconstructed from rendered word tokens with single spaces, so
   it can differ from the EPUB source in spacing and in words split by layout-time
-  hyphenation. Matching ignores ASCII spaces and hyphens and carries match state
-  across adjacent same-spine pages to absorb these — including hyphenation and
-  phrases split across a page boundary (see Matching algorithm). Other
-  punctuation-glyph differences (curly vs straight quotes, em dash, the ellipsis
-  character vs three dots) are not normalized and can still cause a miss, and a
-  match split across a chapter (spine) boundary is not joined.
+  hyphenation. Matching is whole-word (a hit must be delimited by non-word
+  characters) but ignores hyphens, and carries match state across adjacent
+  same-spine pages, so it absorbs hyphenation (hard and line-break, including
+  across a page boundary) while still respecting word boundaries — `"cat"` does
+  not match inside `"category"` (see Matching algorithm). Other punctuation-glyph differences
+  (curly vs straight quotes, em dash, the ellipsis character vs three dots) are
+  not normalized and can still cause a miss, and a match split across a chapter
+  (spine) boundary is not joined.
 - Search results depend on the current layout settings. Font, viewport,
   orientation, margins, paragraph settings, hyphenation, embedded CSS, image
   mode, or Focus Reading changes can invalidate and rebuild section caches.
@@ -354,49 +412,28 @@ heap alone is insufficient to detect fragmentation.
 
 ## Possible future extensions
 
-- Store token/word offsets if exact same-page occurrences and highlighting are
-  worth the extra cache space and rendering complexity.
-- Add compact Unicode case-fold support for languages available on the input
-  method, with an explicit flash budget.
 - Make section layout cooperatively cancellable if cold-search latency becomes
   a usability problem.
-- Reduce per-page seeks during a warm scan. The invariant header state (file
-  size and page-LUT offset) is already cached once per section, so the per-page
-  cost is now two seek+read pairs (the page's LUT entry and its text record).
-  Because the text records and the LUT are written physically contiguously at
-  layout time, a forward whole-section scan could instead read the LUT once into
-  a small buffer and stream the text records sequentially, running the matcher
-  across page boundaries with page attribution. This targets SD seek latency,
-  the likely dominant cost, more directly than any change to the matching
-  algorithm.
-- Store a source-faithful (de-hyphenated) search text. Matching already ignores
-  ASCII spaces and hyphens and carries state across adjacent same-spine pages
-  (see Matching algorithm), which absorbs layout-time hyphenation and spacing
-  differences — including across page boundaries — at no extra storage cost. The
-  remaining gap is *exact-spacing* search: because spaces and hyphens are
-  insignificant, the matcher cannot distinguish `"the cat"` from `"thecat"`, and
-  a query can occasionally match across an unrelated word boundary. Closing that
-  would require the record to store the actual source token stream with correct
-  join/no-join boundaries instead of the rendered tokens. The cost is the reason
-  this is deferred:
-  - The metadata needed (`ParsedText::wordContinues` / `wordNoSpaceBefore`, and
-    where `hyphenateWordAtIndex()` split a word) exists during layout but is
-    discarded at the `TextBlock` boundary — `Page::serializeSearchText()` only
-    sees the rendered tokens, with a visible `-` already pushed onto a
-    line-broken fragment, so it cannot tell `"well-"`+`"known"` (rejoin as
-    `well-known`) from `"inter-"`+`"national"` (rejoin as `international`).
-  - Fixing it means threading per-token join information from the line breaker
-    to the search-text writer — either by adding a per-word "joins previous
-    without space" flag to `TextBlock` (which **bumps the section cache version
-    and rebuilds all caches**) or by surfacing per-page continuation flags
-    through the page-emit callback. Either touches the layout pipeline, the most
-    performance- and stability-sensitive code in the project.
-  Defer until exact-spacing search is actually wanted; the current normalized
-  matching is the better trade for finding a half-remembered passage.
-- Normalize punctuation and Unicode for cross-medium search. Even with
-  space/hyphen folding, curly vs straight quotes, em dash vs hyphen, and NFD vs
-  NFC input can still cause a miss, and case folding is ASCII-only. For
-  resuming a position from another device running compatible software, KOReader
-  progress sync already restores an exact position without text matching and is
-  the more reliable mechanism; text search is the fallback for print or
-  unrelated apps.
+- Reduce per-page seeks during a warm scan. The page LUT for a chunk is already
+  read once into a reused buffer, and the invariant header state (file size and
+  page-LUT offset) is cached per section, so the remaining per-page cost is a
+  seek to that page's text record plus the record read. The records are
+  interleaved with each page's rendering data rather than stored contiguously, so
+  the scan must seek over the page graph to reach each one. Writing all per-page
+  search-text records into a single contiguous region (separate from the page
+  graphs) would let a whole-section scan stream them without a per-page seek,
+  targeting SD seek latency — the likely dominant cost — more directly than any
+  change to the matching algorithm. It would bump the cache version.
+- Store a source-faithful (de-hyphenated) search text. Matching now respects
+  spaces, enforces whole-word boundaries, and only fuzzes hyphens (see Matching
+  algorithm), so the cross-word straddle and the mid-word match at a query's ends
+  are both gone. One minor gap remains: the line-break-hyphen rejoin is a
+  heuristic (any space directly after a hyphen is dropped). Closing it fully
+  means storing the source token stream with correct join/no-join boundaries
+  instead of the rendered tokens. The join metadata (`WORD_FLAG_INSERTED_HYPHEN`,
+  `ParsedText` continuation flags) exists during layout but is dropped before
+  `Page::serializeSearchText()`, which sees only rendered tokens with the
+  line-break `-` already appended. Threading it through touches the layout
+  pipeline and bumps the cache version, so defer until the residual gap bites.
+- Normalize punctuation for cross-medium search. Even with space/hyphen folding,
+  curly vs straight quotes and em dash vs hyphen can still cause a miss.
