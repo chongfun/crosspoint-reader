@@ -2,18 +2,9 @@
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- In-book search now respects spaces: a search term no longer matches across a word boundary it does not contain (so it can't start in the middle of one word and end in the middle of the next), while still matching words broken by hyphenation, including across a line or page break.
-
-### Fixed
-
-- Search-result highlights are now readable in dark mode; previously the inverted highlight was drawn black-on-black and disappeared.
-- Search-result highlights no longer briefly paint the wrong words when jumping to a match that lands on the same page number in a different chapter.
-- Jumping to a search match while a footnote preview is open now shows the matched page instead of reopening the footnote preview.
-- Search results now highlight the matched words on the page again; a buffer-allocation guard was skipping the highlighter's setup so no matches were ever marked.
-- Search-result highlights no longer mark the wrong words when the searched term also appears on the previous page.
-- The reader no longer keeps the chapter's cache file open after highlighting a search result, which could block other reads on hardware that allows only one open file at a time.
+- In-book search: find a word or phrase within the current EPUB and jump to a match, with the matched words highlighted on the page. Matching respects word boundaries while still finding words broken by hyphenation across a line or page.
 
 ## [v1.3.4] - 2026-06-24
 
