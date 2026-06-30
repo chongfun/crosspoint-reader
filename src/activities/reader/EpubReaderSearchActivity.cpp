@@ -20,6 +20,22 @@ namespace {
 constexpr int PROGRESS_REPAINT_STEP_PERCENT = 10;
 }  // namespace
 
+EpubReaderSearchActivity::SearchRoute EpubReaderSearchActivity::SearchRoute::plan(const Origin& origin) {
+  const int startSpine = (origin.spineIndex >= 0 && origin.spineIndex < origin.spineItemsCount) ? origin.spineIndex : 0;
+  // A pending page remap means the section was reflowed but not yet reloaded, so
+  // the cached page count belongs to this start spine and must drive the remap.
+  const bool hasPendingPageRemap =
+      !origin.sectionLoaded && origin.cachedPageCount > 0 && origin.cachedSpineIndex == startSpine;
+  // The page the search is initiated from (the wrap normally stops before
+  // re-examining it). Only meaningful when the start spine is the reader's spine.
+  const int initiatedFromPage = startSpine == origin.spineIndex ? std::max(0, origin.page) : 0;
+  // "Find next" only when repeating the same query from the exact previous match
+  // and no remap is pending; it then begins one page past the originating page.
+  const bool isFindNext = !hasPendingPageRemap && origin.sameQuery &&
+                          origin.lastResultSpineIndex == origin.spineIndex && origin.lastResultPage == origin.page;
+  return make(startSpine, initiatedFromPage, isFindNext, hasPendingPageRemap ? origin.cachedPageCount : 0);
+}
+
 void EpubReaderSearchActivity::SearchRoute::resolvePageCount(const int targetPageCount) {
   if (sourcePageCount <= 0) {
     return;
@@ -51,15 +67,21 @@ EpubReaderSearchActivity::EpubReaderSearchActivity(GfxRenderer& renderer, Mapped
       currentPage(route.startPage),
       viewportWidth(viewportWidth),
       viewportHeight(viewportHeight) {
+  bool ok = false;
   if (query) {
-    const size_t length = std::min(strlen(query), this->query.size() - 1);
-    memcpy(this->query.data(), query, length);
-    this->query[length] = '\0';
+    const size_t len = strnlen(query, SearchMatcher::MAX_QUERY_BYTES + 1);
+    if (len <= SearchMatcher::MAX_QUERY_BYTES) {
+      strncpy(this->query.data(), query, this->query.size() - 1);
+      this->query[this->query.size() - 1] = '\0';
+      if (matcher.compile(this->query.data())) {
+        ok = true;
+      }
+    }
   }
   // Compile the query once here; every page scan reuses the pattern + table. A
   // rejected query (empty/oversized, or only separators) means there is nothing
   // to scan, so fail closed rather than relying solely on the caller's gate.
-  if (!Section::compileSearchQuery(this->query.data(), compiledQuery)) {
+  if (!ok) {
     state = SearchState::NotFound;
   }
 }
@@ -103,7 +125,7 @@ bool EpubReaderSearchActivity::shouldScanWrappedStopContinuation() const {
   // occurrence that crosses the circular route boundary without changing find
   // next's originating-page exclusion.
   return wrapped && route.startPage == route.stopPage && currentSpineIndex == route.startSpineIndex &&
-         currentPage == route.stopPage && scanMatched > 0;
+         currentPage == route.stopPage && matcher.hasPartialMatch();
 }
 
 void EpubReaderSearchActivity::advanceSpine() {
@@ -111,10 +133,20 @@ void EpubReaderSearchActivity::advanceSpine() {
   currentPage = 0;
   sectionLoaded = false;
   sectionCacheRepairAttempted = false;
-  scanMatched = 0;  // spine boundary: don't carry a partial match across chapters
+  matcher.reset();  // spine boundary: don't carry a partial match across chapters
 }
 
-bool EpubReaderSearchActivity::loadCurrentSection() {
+void EpubReaderSearchActivity::dropSectionCache() {
+  section.resetForSpine(currentSpineIndex);
+  sectionLoaded = false;
+  section.clearCache();
+}
+
+bool EpubReaderSearchActivity::ensureSectionLoaded() {
+  if (sectionLoaded) {
+    return true;
+  }
+
   section.resetForSpine(currentSpineIndex);
   if (section.loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                               SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
@@ -130,6 +162,7 @@ bool EpubReaderSearchActivity::loadCurrentSection() {
                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
                                  SETTINGS.imageRendering, SETTINGS.focusReadingEnabled)) {
     LOG_ERR("EPS", "Failed to build section %d for search", currentSpineIndex);
+    setFailure(SearchState::Error);
     return false;
   }
 
@@ -137,18 +170,7 @@ bool EpubReaderSearchActivity::loadCurrentSection() {
   return true;
 }
 
-bool EpubReaderSearchActivity::invalidateCurrentSectionCache() {
-  // resetForSpine closes the member HalFile before clearCache removes its path.
-  section.resetForSpine(currentSpineIndex);
-  sectionLoaded = false;
-  if (!section.clearCache()) {
-    LOG_ERR("EPS", "Failed to clear corrupt section %d", currentSpineIndex);
-    return false;
-  }
-  return true;
-}
-
-bool EpubReaderSearchActivity::preparePage() {
+bool EpubReaderSearchActivity::advanceSpineIfNeeded() {
   const int spineCount = epub ? epub->getSpineItemsCount() : 0;
   if (spineCount <= 0) {
     setFailure(SearchState::Error);
@@ -166,7 +188,7 @@ bool EpubReaderSearchActivity::preparePage() {
       currentPage = 0;
       sectionLoaded = false;
       sectionCacheRepairAttempted = false;
-      scanMatched = 0;  // wrap is not contiguous reading text
+      matcher.reset();  // wrap is not contiguous reading text
     }
 
     if (reachedWrappedStop() && !shouldScanWrappedStopContinuation()) {
@@ -174,9 +196,8 @@ bool EpubReaderSearchActivity::preparePage() {
       return false;
     }
 
-    if (!sectionLoaded && !loadCurrentSection()) {
-      setFailure(SearchState::Error);
-      return false;
+    if (!ensureSectionLoaded()) {
+      return false;  // ensureSectionLoaded calls setFailure
     }
 
     if (!wrapped && currentSpineIndex == route.startSpineIndex && route.sourcePageCount > 0) {
@@ -184,18 +205,12 @@ bool EpubReaderSearchActivity::preparePage() {
       currentPage = route.startPage;
     }
 
-    // Once the start spine is loaded, capture the byte-weighted positions of the
-    // scan's start and stop pages and the resulting route length, so progress
-    // reads against the reader's own progress model rather than a spine-count
-    // approximation. Done once (scanStartPos stays negative until captured).
     if (scanStartPos < 0.0f && !wrapped && currentSpineIndex == route.startSpineIndex && epub) {
       const float pc = section.pageCount > 0 ? static_cast<float>(section.pageCount) : 1.0f;
       scanStartPos =
           epub->calculateProgress(route.startSpineIndex, std::min(1.0f, static_cast<float>(route.startPage) / pc));
       const float stopPos =
           epub->calculateProgress(route.startSpineIndex, std::min(1.0f, static_cast<float>(route.stopPage) / pc));
-      // Route: forward from start to the end of the book (1.0), wrap, then up to
-      // the stop page. For a fresh search start == stop, giving a full route of 1.
       scanRouteLength = (1.0f - scanStartPos) + stopPos;
     }
 
@@ -208,35 +223,64 @@ bool EpubReaderSearchActivity::preparePage() {
 }
 
 void EpubReaderSearchActivity::scanNextPage() {
-  if (!preparePage()) {
+  if (!advanceSpineIfNeeded()) {
     return;
   }
 
-  const size_t matchedBeforePage = scanMatched;
-  auto match = section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched);
-  if (!match.has_value() && !sectionCacheRepairAttempted) {
-    sectionCacheRepairAttempted = true;
-    scanMatched = matchedBeforePage;
-    if (!invalidateCurrentSectionCache() || !loadCurrentSection()) {
-      setFailure(SearchState::Error);
-      return;
+  int endPage = section.pageCount;
+  if (wrapped && currentSpineIndex == route.startSpineIndex) {
+    endPage = route.stopPage;
+    if (shouldScanWrappedStopContinuation()) {
+      endPage = route.stopPage + 1;  // allow scanning the exact stopPage to finish a carried match
     }
-    match = section.pageContainsText(static_cast<uint16_t>(currentPage), compiledQuery, scanMatched);
   }
 
-  if (!match.has_value()) {
-    // Do not leave a version-valid but unreadable cache to fail every future search.
-    invalidateCurrentSectionCache();
+  // Chunk scan to 50 pages at a time to yield to the main render/input loop
+  endPage = std::min<int>(endPage, currentPage + 50);
+
+  matcherBeforeChunk = matcher;
+  auto result = section.scanForward(currentPage, endPage, matcher);
+
+  // A transient I/O failure or OOM is not corruption: surface the error without
+  // deleting a valid cache or forcing a re-layout that would just fail again.
+  if (result.status == Section::ScanStatus::IoError) {
     setFailure(SearchState::Error);
     return;
   }
-  if (*match) {
-    setResult(ProgressChangeResult{currentSpineIndex, currentPage});
+
+  // A structurally corrupt cache can sometimes be repaired by rebuilding once.
+  if (result.status == Section::ScanStatus::CorruptCache && !sectionCacheRepairAttempted) {
+    sectionCacheRepairAttempted = true;
+    matcher = matcherBeforeChunk;
+
+    dropSectionCache();
+
+    if (!ensureSectionLoaded()) {
+      return;
+    }
+    result = section.scanForward(currentPage, endPage, matcher);
+    if (result.status == Section::ScanStatus::IoError) {
+      setFailure(SearchState::Error);
+      return;
+    }
+  }
+
+  if (result.status == Section::ScanStatus::CorruptCache) {
+    // Still corrupt after a rebuild: drop the bad cache and surface the error
+    // rather than entering an unbounded rebuild loop.
+    dropSectionCache();
+    setFailure(SearchState::Error);
+    return;
+  }
+
+  if (result.status == Section::ScanStatus::Match) {
+    setResult(ProgressChangeResult{currentSpineIndex, result.page, result.matchStartByte, result.matchEndByte});
     finish();
     return;
   }
 
-  ++currentPage;
+  // NoMatch: advance past the scanned chunk.
+  currentPage = endPage;
 }
 
 int EpubReaderSearchActivity::searchProgressPercent() const {
@@ -254,7 +298,7 @@ int EpubReaderSearchActivity::searchProgressPercent() const {
   // Work done since the scan began: forward distance before the wrap, plus a
   // full forward lap (1.0 - start) once wrapped.
   const float workDone = wrapped ? (1.0f - scanStartPos) + posNow : posNow - scanStartPos;
-  return ReaderUtils::clampPercent(static_cast<int>((workDone / scanRouteLength) * 100.0f));
+  return ReaderUtils::clampPercent(static_cast<int>((workDone / scanRouteLength) * 100.0f + 0.5f));
 }
 
 void EpubReaderSearchActivity::loop() {
@@ -336,5 +380,5 @@ void EpubReaderSearchActivity::render(RenderLock&&) {
   const char* confirmLabel = terminal ? tr(STR_DONE) : "";
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  renderer.displayBuffer(terminal ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
 }

@@ -43,6 +43,11 @@ struct PageResult {
 struct ProgressChangeResult {
   int spineIndex = 0;
   int page = 0;
+  // Byte span of the search match within the landed page's search-text record
+  // (inclusive), so the reader can highlight the matched words without re-running
+  // the matcher. -1 when the result does not carry a match span.
+  int matchStartByte = -1;
+  int matchEndByte = -1;
 };
 
 enum class NetworkMode;

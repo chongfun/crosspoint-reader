@@ -3,6 +3,7 @@
 #include <Epub/Page.h>
 #include <GfxRenderer.h>
 
+#include "CrossPointSettings.h"
 #include "EpubReaderUtils.h"
 #include "ReaderUtils.h"
 
@@ -29,7 +30,7 @@ void SearchHighlighter::drawSearchHighlights(const Page& page, const int fontId,
   // theme: black fill + white text in light mode, white fill + black text in dark
   // mode. Hard-coding black/white made the highlight vanish in dark mode (black
   // fill on a black page, white text identical to body text).
-  const bool foregroundBlack = ReaderUtils::readerForegroundBlack();
+  const bool foregroundBlack = true;
   const auto isSearchMatchWord = [firstWord, lastWord](const uint16_t pageWordIndex) {
     return pageWordIndex >= firstWord && pageWordIndex <= lastWord;
   };

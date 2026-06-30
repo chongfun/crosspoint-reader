@@ -34,6 +34,7 @@
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
+#include "SearchHighlighter.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -689,7 +690,7 @@ void EpubReaderActivity::launchSearchInput() {
   // The activity allocation is one-shot and owned by ActivityManager; the
   // 64-byte limit bounds its internal query string.
   auto keyboard = makeUniqueNoThrow<KeyboardEntryActivity>(
-      renderer, mappedInput, tr(STR_SEARCH), lastSearchQuery.data(), Section::MAX_SEARCH_QUERY_BYTES, InputType::Text);
+      renderer, mappedInput, tr(STR_SEARCH), lastSearchQuery.data(), SearchMatcher::MAX_QUERY_BYTES, InputType::Text);
   if (!keyboard) {
     LOG_ERR("ERS", "OOM: KeyboardEntryActivity (%u bytes)", static_cast<unsigned>(sizeof(KeyboardEntryActivity)));
     requestUpdate();
@@ -703,7 +704,7 @@ void EpubReaderActivity::launchSearchInput() {
     }
 
     const auto& query = std::get<KeyboardResult>(result.data).text;
-    if (!Section::isValidSearchQuery(query)) {
+    if (!SearchMatcher::isValidSearchQuery(query)) {
       // Surface why the search was not accepted (e.g. whitespace/hyphen-only
       // input) instead of silently repainting, which reads as a no-op.
       showTransientMessage(tr(STR_INVALID_SEARCH_QUERY));
@@ -721,19 +722,16 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   }
 
   const int resumePage = section ? section->currentPage : nextPageNumber;
-  const int searchStartSpine =
-      (currentSpineIndex >= 0 && currentSpineIndex < epub->getSpineItemsCount()) ? currentSpineIndex : 0;
-  const bool hasPendingPageRemap = !section && cachedChapterTotalPageCount > 0 && cachedSpineIndex == searchStartSpine;
-  // The page the search is initiated from (the wrap normally stops before
-  // re-examining it). A fresh search may revisit it only to complete a match
-  // begun on the preceding page. "Find next" begins one page past it so a wrap
-  // cannot re-return it; SearchRoute owns that start/stop relationship.
-  const int initiatedFromPage = searchStartSpine == currentSpineIndex ? std::max(0, resumePage) : 0;
-  const bool sameQuery = strcmp(lastSearchQuery.data(), query.c_str()) == 0;
-  const bool isFindNext = !hasPendingPageRemap && sameQuery && lastSearchResultSpine == currentSpineIndex &&
-                          lastSearchResultPage == resumePage;
-  const EpubReaderSearchActivity::SearchRoute route = EpubReaderSearchActivity::SearchRoute::make(
-      searchStartSpine, initiatedFromPage, isFindNext, hasPendingPageRemap ? cachedChapterTotalPageCount : 0);
+  const EpubReaderSearchActivity::SearchRoute::Origin origin{currentSpineIndex,
+                                                             resumePage,
+                                                             epub->getSpineItemsCount(),
+                                                             section != nullptr,
+                                                             cachedChapterTotalPageCount,
+                                                             cachedSpineIndex,
+                                                             strcmp(lastSearchQuery.data(), query.c_str()) == 0,
+                                                             lastSearchResultSpine,
+                                                             lastSearchResultPage};
+  const EpubReaderSearchActivity::SearchRoute route = EpubReaderSearchActivity::SearchRoute::plan(origin);
 
   const ReaderViewport viewport = calculateReaderViewport(renderer, automaticPageTurnActive);
 
@@ -761,9 +759,11 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
 
   memcpy(lastSearchQuery.data(), query.data(), query.size());
   lastSearchQuery[query.size()] = '\0';
-  if (!sameQuery) {
+  if (!origin.sameQuery) {
     lastSearchResultSpine = -1;
     lastSearchResultPage = -1;
+    lastSearchMatchStartByte = -1;
+    lastSearchMatchEndByte = -1;
   }
 
   startActivityForResult(std::move(searchActivity), [this](const ActivityResult& result) {
@@ -776,6 +776,8 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
       cachedChapterTotalPageCount = 0;
       lastSearchResultSpine = match.spineIndex;
       lastSearchResultPage = match.page;
+      lastSearchMatchStartByte = match.matchStartByte;
+      lastSearchMatchEndByte = match.matchEndByte;
       showTransientMessage(tr(STR_SEARCH_MATCH_FOUND));
     }
   });
@@ -1131,6 +1133,13 @@ bool EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageC
 void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int orientedMarginTop,
                                         const int orientedMarginRight, const int orientedMarginBottom,
                                         const int orientedMarginLeft) {
+  if (section && (currentSpineIndex != lastSearchResultSpine || section->currentPage != lastSearchResultPage)) {
+    // Left the search-result page: the highlight is no longer active.
+    lastSearchResultSpine = -1;
+    lastSearchResultPage = -1;
+    lastSearchMatchStartByte = -1;
+    lastSearchMatchEndByte = -1;
+  }
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
 
@@ -1153,6 +1162,12 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   };
 
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+
+  const bool onSearchResultPage = lastSearchResultSpine != -1 && lastSearchResultPage != -1;
+  SearchHighlighter().drawSearchHighlights(*page, fontId, orientedMarginTop, orientedMarginLeft,
+                                           onSearchResultPage ? lastSearchMatchStartByte : -1,
+                                           onSearchResultPage ? lastSearchMatchEndByte : -1, renderer);
+
   renderStatusBar();
   const auto tBwRender = millis();
 

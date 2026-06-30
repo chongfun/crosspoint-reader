@@ -1,6 +1,7 @@
 #pragma once
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
+#include <Epub/SearchMatcher.h>
 #include <Epub/Section.h>
 
 #include <array>
@@ -42,9 +43,11 @@ class EpubReaderActivity final : public Activity {
   // which returns stable storage in the static i18n string table.
   const char* transientMessage = nullptr;
   unsigned long transientMessageTime = 0UL;
-  std::array<char, Section::MAX_SEARCH_QUERY_BYTES + 1> lastSearchQuery{};
+  std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> lastSearchQuery{};
   int lastSearchResultSpine = -1;
   int lastSearchResultPage = -1;
+  int lastSearchMatchStartByte = -1;
+  int lastSearchMatchEndByte = -1;
   std::vector<BookmarkEntry> cachedBookmarks;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).

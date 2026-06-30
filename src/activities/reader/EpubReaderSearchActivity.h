@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Epub.h>
+#include <Epub/SearchMatcher.h>
 #include <Epub/Section.h>
 
 #include <array>
@@ -29,6 +30,26 @@ class EpubReaderSearchActivity final : public Activity {
       return SearchRoute{spineIndex, initiatedFromPage + (findNext ? 1 : 0), initiatedFromPage, sourcePageCount};
     }
 
+    // The reader state a search is launched from. plan() turns this into a route
+    // without touching reader internals, so the start/stop and fresh-vs-find-next
+    // policy is one pure, host-testable function instead of inline activity code.
+    struct Origin {
+      int spineIndex;            // the spine the reader is on (may be out of range)
+      int page;                  // the page the reader is on
+      int spineItemsCount;       // total spine items, to clamp spineIndex
+      bool sectionLoaded;        // whether a Section is currently loaded
+      int cachedPageCount;       // pending-remap source page count, 0 if none
+      int cachedSpineIndex;      // spine the cached page count belongs to
+      bool sameQuery;            // query matches the previous search
+      int lastResultSpineIndex;  // spine of the previous match, -1 if none
+      int lastResultPage;        // page of the previous match, -1 if none
+    };
+
+    // Resolve the start spine/page and decide fresh search vs "find next" from
+    // the reader's launch state. A repeated find-next on the same match begins
+    // one page past it; everything else begins at the originating page.
+    static SearchRoute plan(const Origin& origin);
+
     // Translate page coordinates captured before a viewport reflow into the
     // loaded section's pagination. A zero source count means no remap is pending.
     void resolvePageCount(int targetPageCount);
@@ -50,10 +71,13 @@ class EpubReaderSearchActivity final : public Activity {
 
   std::shared_ptr<Epub> epub;
   Section section;
-  std::array<char, Section::MAX_SEARCH_QUERY_BYTES + 1> query{};
-  // `query` compiled once in the constructor (normalized pattern + KMP table)
-  // and reused for every page scan instead of being rebuilt per page.
-  Section::CompiledSearchQuery compiledQuery{};
+  std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> query{};
+  SearchMatcher matcher;
+  // Snapshot of `matcher` taken at the start of each scanned chunk so a
+  // corrupt-cache rebuild can roll the carried match state back and rescan.
+  // A reused member rather than a per-chunk stack local (~0.6 KB) to keep the
+  // cooperative scan loop's stack small.
+  SearchMatcher matcherBeforeChunk;
   SearchRoute route;
   int currentSpineIndex;
   int currentPage;
@@ -63,11 +87,7 @@ class EpubReaderSearchActivity final : public Activity {
   bool sectionLoaded = false;
   bool sectionCacheRepairAttempted = false;
   bool wrapped = false;
-  // KMP partial-match length carried across consecutive pages of the same spine
-  // so a query split across a page boundary (line-hyphenated word, or a phrase)
-  // still matches. Reset at every reading-order discontinuity: scan start (0
-  // init), spine change (advanceSpine), and the wrap.
-  size_t scanMatched = 0;
+
   // Last progress percentage painted to the panel. Repaints are gated on this
   // changing so the e-ink panel is not refreshed per page. Starts at 0 because
   // onEnter() paints the initial 0% screen before the scan begins.
@@ -80,12 +100,15 @@ class EpubReaderSearchActivity final : public Activity {
   float scanStartPos = -1.0f;
   float scanRouteLength = 0.0f;
 
-  bool preparePage();
-  bool loadCurrentSection();
-  bool invalidateCurrentSectionCache();
+  bool advanceSpineIfNeeded();
+  bool ensureSectionLoaded();
   bool reachedWrappedStop() const;
   bool shouldScanWrappedStopContinuation() const;
   void advanceSpine();
+  // Invalidate the current spine's section so the next scan rebuilds it: reset the
+  // section for this spine, mark it unloaded, and delete the on-disk cache. Used by
+  // the corrupt-cache repair and give-up paths so both teardown sequences stay in step.
+  void dropSectionCache();
   void scanNextPage();
   // Approximate 0-100 fraction of the scan route completed: the byte-weighted
   // distance travelled since the search began, over the route length (forward to
