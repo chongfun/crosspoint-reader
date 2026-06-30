@@ -4106,6 +4106,16 @@ void EpubReaderActivity::cacheCurrentSectionPosition() {
   if (activeFootnotePreview) {
     return;
   }
+  // This runs only before a live re-layout (font, margin, orientation, or other
+  // settings change) that rebuilds the section in place. The match byte span is
+  // tied to the old layout's per-page text record, so it is meaningless once the
+  // page is re-laid-out even if the page number lands on the same value.
+  // Invalidate it here so a stale highlight can never be reused. Leaving the
+  // search-result page is handled separately by renderContents().
+  lastSearchResultSpine = -1;
+  lastSearchResultPage = -1;
+  lastSearchMatchStartByte = -1;
+  lastSearchMatchEndByte = -1;
   cachedSpineIndex = currentSpineIndex;
   cachedChapterPageNumber = section->currentPage;
   cachedChapterTotalPageCount = section->pageCount;
