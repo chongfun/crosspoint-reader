@@ -76,6 +76,11 @@ class Section {
     // failure rather than an abort. Freed when the Section is destroyed.
     std::unique_ptr<uint8_t[]> lutBuf;
     size_t lutBufCapacity = 0;
+
+    // Larger reused read buffer for text records to minimize slow SPI file reads.
+    // Allocated once (nothrow) on first use.
+    std::unique_ptr<uint8_t[]> textBuf;
+    size_t textBufCapacity = 0;
   };
   SearchScanState searchScan;
 

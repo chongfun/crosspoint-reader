@@ -115,8 +115,21 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     return {ScanStatus::IoError, -1};
   }
 
+  // Allocate a larger heap buffer to batch text reads, drastically reducing
+  // slow SPI transactions over the small 64-byte stack array previously used.
+  constexpr size_t TEXT_BUF_SIZE = 2048;
+  if (searchScan.textBufCapacity < TEXT_BUF_SIZE) {
+    searchScan.textBuf = makeUniqueNoThrow<uint8_t[]>(TEXT_BUF_SIZE);
+    if (!searchScan.textBuf) {
+      searchScan.textBufCapacity = 0;
+      LOG_ERR("SCT", "Search failed: OOM for text buffer");
+      closeSearchState();
+      return {ScanStatus::IoError, -1};
+    }
+    searchScan.textBufCapacity = TEXT_BUF_SIZE;
+  }
+
   // Sequentially read the text records
-  std::array<uint8_t, 64> buffer;
   for (uint16_t i = 0; i < count; i++) {
     uint32_t searchTextOffset = 0;
     // searchTextOffset is the 2nd uint32_t in the LUT entry
@@ -183,8 +196,8 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     // match lies so the highlighter can map it to words without re-scanning.
     uint32_t pageBytePos = 0;
     while (remaining > 0) {
-      const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
-      if (file.read(buffer.data(), chunkSize) != chunkSize) {
+      const size_t chunkSize = std::min<size_t>(searchScan.textBufCapacity, remaining);
+      if (file.read(searchScan.textBuf.get(), chunkSize) != chunkSize) {
         LOG_ERR("SCT", "Search failed: truncated text record");
         closeSearchState();
         return {ScanStatus::IoError, -1};
@@ -192,7 +205,7 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       remaining -= chunkSize;
 
       for (size_t j = 0; j < chunkSize; ++j) {
-        const int signal = matcher.feed(buffer[j]);
+        const int signal = matcher.feed(searchScan.textBuf[j]);
         if (signal > 0) {
           // A whole-word match completed on buffer[j], but its trailing boundary
           // is not yet known. Record the span now (buffer[j] is the match's last
