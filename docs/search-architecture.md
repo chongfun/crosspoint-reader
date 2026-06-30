@@ -198,8 +198,22 @@ a space immediately following a hyphen — the separator a line-break hyphenatio
 leaves between the two halves — which is dropped so the halves rejoin
 (`"international"` matches the stored `"inter- national"`). Runs of spaces collapse
 and leading/trailing spaces are trimmed so query spacing lines up with the
-single-space record. A query may still match a substring inside a longer word
-(`"cat"` matches `"category"`); that within-word substring behavior is unchanged.
+single-space record.
+
+Matches are whole-word: a hit must be delimited by non-word characters on both
+sides, where a word character is `[a-z0-9]` after folding and everything else
+(spaces, punctuation, the record's edges) is a boundary. So `"cat"` no longer
+matches inside `"category"` or `"scat"`, but it still matches `"the cat"`,
+`"(cat)"`, and `"cat."`. The boundary is only enforced on an edge that is itself
+a word character, mirroring a regex `\b`, so a query like `"etc."` is not forced
+to sit before a non-word character. Because the trailing boundary can only be
+seen on the character *after* a match, a completed match is held as tentative
+until the next significant character (a word char rejects it, a boundary
+confirms it) or until the record ends — the record stores whole space-separated
+words with no trailing separator, so its end is itself a word boundary unless a
+line-break hyphen carries the final word onto the next page. Dropped characters
+(hyphens, unmapped codepoints) stay transparent for boundary purposes, so the
+hyphenation-aware joins above are unaffected.
 
 Codepoints with no ASCII or Latin folding (CJK, Cyrillic, Greek, unmapped
 symbols, etc.) normalize to nothing and are dropped on **both** sides, like
@@ -339,10 +353,11 @@ prevents automatic sleep while searching.
 - Case-insensitive matching and diacritic folding are supported for ASCII and common Latin characters. Codepoints outside the supported Latin set (CJK, Cyrillic, Greek, unmapped symbols) normalize to nothing and are ignored on both sides during matching rather than requiring an exact match (see Matching algorithm), so they neither help nor block a match.
 - Search text is reconstructed from rendered word tokens with single spaces, so
   it can differ from the EPUB source in spacing and in words split by layout-time
-  hyphenation. Matching ignores hyphens but respects spaces, and carries match
-  state across adjacent same-spine pages, so it absorbs hyphenation (hard and
-  line-break, including across a page boundary) while still treating spaces as
-  word boundaries (see Matching algorithm). Other punctuation-glyph differences
+  hyphenation. Matching is whole-word (a hit must be delimited by non-word
+  characters) but ignores hyphens, and carries match state across adjacent
+  same-spine pages, so it absorbs hyphenation (hard and line-break, including
+  across a page boundary) while still respecting word boundaries — `"cat"` does
+  not match inside `"category"` (see Matching algorithm). Other punctuation-glyph differences
   (curly vs straight quotes, em dash, the ellipsis character vs three dots) are
   not normalized and can still cause a miss, and a match split across a chapter
   (spine) boundary is not joined.
@@ -410,15 +425,15 @@ heap alone is insufficient to detect fragmentation.
   targeting SD seek latency — the likely dominant cost — more directly than any
   change to the matching algorithm. It would bump the cache version.
 - Store a source-faithful (de-hyphenated) search text. Matching now respects
-  spaces and only fuzzes hyphens (see Matching algorithm), so the common
-  cross-word straddle is gone. Two minor gaps remain: the line-break-hyphen
-  rejoin is a heuristic (any space directly after a hyphen is dropped), and a
-  multi-word query can still match mid-word at its own ends. Closing them fully
+  spaces, enforces whole-word boundaries, and only fuzzes hyphens (see Matching
+  algorithm), so the cross-word straddle and the mid-word match at a query's ends
+  are both gone. One minor gap remains: the line-break-hyphen rejoin is a
+  heuristic (any space directly after a hyphen is dropped). Closing it fully
   means storing the source token stream with correct join/no-join boundaries
   instead of the rendered tokens. The join metadata (`WORD_FLAG_INSERTED_HYPHEN`,
   `ParsedText` continuation flags) exists during layout but is dropped before
   `Page::serializeSearchText()`, which sees only rendered tokens with the
   line-break `-` already appended. Threading it through touches the layout
-  pipeline and bumps the cache version, so defer until the residual gaps bite.
+  pipeline and bumps the cache version, so defer until the residual gap bites.
 - Normalize punctuation for cross-medium search. Even with space/hyphen folding,
   curly vs straight quotes and em dash vs hyphen can still cause a miss.

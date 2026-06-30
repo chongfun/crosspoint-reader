@@ -6,6 +6,11 @@
 #include "AsciiCase.h"
 
 namespace {
+// A "word" byte for boundary purposes. Normalization has already folded every
+// matchable letter to ASCII a-z, so word characters are exactly [a-z0-9];
+// spaces, punctuation, and dropped/unmapped codepoints are boundaries.
+bool isWordByte(uint8_t b) { return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9'); }
+
 uint32_t stripLatinDiacritics(uint32_t cp) {
   if (cp >= 'A' && cp <= 'Z') return cp + 32;
 
@@ -153,6 +158,12 @@ bool SearchMatcher::compile(const std::string_view query) {
     return false;
   }
 
+  // A whole-word boundary is only enforced on an edge that is itself a word
+  // character, mirroring \b: "cat" requires boundaries on both sides, but a
+  // query ending in punctuation does not demand a non-word character after it.
+  patternStartsWithWordChar = isWordByte(pattern[0]);
+  patternEndsWithWordChar = isWordByte(pattern[length - 1]);
+
   for (size_t i = 1, m = 0; i < length; ++i) {
     const uint8_t value = pattern[i];
     while (m > 0 && value != pattern[m]) {
@@ -254,6 +265,20 @@ int SearchMatcher::feed(uint8_t c) {
     prevWasHyphen = false;
     lastEmittedWasSpace = (b == ' ');
 
+    // This significant byte is the character immediately after any match that
+    // completed earlier, so it decides that match's trailing boundary. A pattern
+    // that ends in a word char needs a non-word neighbour here; one ending in a
+    // non-word char needs no trailing boundary at all and is confirmed by any
+    // following character. (The record's end is handled by the caller.)
+    if (pendingActive) {
+      pendingActive = false;
+      if (!patternEndsWithWordChar || !isWordByte(b)) {
+        return -1;  // boundary holds: the pending match is a whole word
+      }
+      // A word character extends the match into a longer word; reject it and
+      // keep scanning. KMP state is untouched, so a later occurrence can match.
+    }
+
     const uint8_t value = b;
 
     while (matched > 0 && value != pattern[matched]) {
@@ -272,6 +297,10 @@ int SearchMatcher::feed(uint8_t c) {
 
     matchByteWidths[widthBufferHead] = currentCodepointWidth;
     matchCodepointIds[widthBufferHead] = currentCodepointId;
+    // Record what preceded this byte before updating the running class, so the
+    // completion check below can read the character just before the match start.
+    precededByWordChar[widthBufferHead] = prevWasWordChar;
+    prevWasWordChar = isWordByte(b);
     widthBufferHead = (widthBufferHead + 1) % MAX_QUERY_BYTES;
 
     if (value == pattern[matched]) {
@@ -288,7 +317,32 @@ int SearchMatcher::feed(uint8_t c) {
           }
         }
         matched = prefix[matched - 1];
-        totalWidthReturn = totalWidth;
+
+        // Leading boundary: the character before the match's first significant
+        // byte must be a non-word character (unless the pattern itself starts on
+        // a non-word char, where no boundary is required). The start byte sits
+        // `length` positions back in the ring, the same index the width sum used.
+        bool leadingBoundaryOk = !patternStartsWithWordChar;
+        if (!leadingBoundaryOk) {
+          const int startIndex = (widthBufferHead + MAX_QUERY_BYTES - length) % MAX_QUERY_BYTES;
+          leadingBoundaryOk = !precededByWordChar[startIndex];
+        }
+        // A multi-character fold (e.g. ß -> "ss") emits more bytes in this same
+        // feed, and every such expansion is a run of letters. If the pattern ends
+        // on a word char, that next letter is its trailing neighbour and rejects
+        // the match here, before the per-feed pending check below would ever see
+        // it. (When the pattern ends on a non-word char no trailing boundary is
+        // required, so the following byte is harmless.)
+        const bool moreBytesInFold = shift + 8 < 32 && ((norm >> (shift + 8)) & 0xFF) != 0;
+        if (leadingBoundaryOk && !(patternEndsWithWordChar && moreBytesInFold)) {
+          // Tentative: the trailing boundary is confirmed by the next byte (or by
+          // the caller at the record's end). Report the width so the caller can
+          // record the span; a return here cannot also be a pending confirmation
+          // because confirmation returns -1 above before reaching this point.
+          totalWidthReturn = totalWidth;
+        }
+        // A failed leading boundary means the match sits inside a longer word;
+        // ignore this completion and let KMP keep scanning for a real one.
       }
     }
   }

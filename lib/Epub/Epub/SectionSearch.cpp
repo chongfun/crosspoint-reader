@@ -151,6 +151,11 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     // A page with no searchable text (e.g. image-only) is a content discontinuity,
     // so drop any carried partial match rather than bridging across it.
     if (remaining == 0) {
+      // The discontinuity is a hard word boundary, so it confirms a match left
+      // pending by an earlier page (e.g. one that ended on a line-break hyphen).
+      if (matcher.hasPendingMatch()) {
+        return {ScanStatus::Match, matcher.pendingPage(), matcher.pendingStartByte(), matcher.pendingEndByte()};
+      }
       matcher.reset();
       continue;
     }
@@ -162,8 +167,12 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     // hyphen rejoin with the continuation word (the matcher drops a space right
     // after a hyphen). The injected byte is not part of the record, so it is not
     // counted in pageBytePos; it can never complete a match because a compiled
-    // query never ends in a space.
-    matcher.feed(' ');
+    // query never ends in a space. It can, however, confirm the trailing boundary
+    // of a match left pending by the previous page; report it on the page where
+    // it completed (the span the matcher carries), not this one.
+    if (matcher.feed(' ') < 0) {
+      return {ScanStatus::Match, matcher.pendingPage(), matcher.pendingStartByte(), matcher.pendingEndByte()};
+    }
 
     // Byte offset of the next fed byte within this page's text record content
     // (the bytes after the u32 length prefix). Used to report where a completed
@@ -179,19 +188,33 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       remaining -= chunkSize;
 
       for (size_t j = 0; j < chunkSize; ++j) {
-        const int matchWidth = matcher.feed(buffer[j]);
-        if (matchWidth > 0) {
-          // buffer[j] is the match's last byte; the match spans the preceding
-          // matchWidth bytes. Clamp the start to 0 when the match began on an
-          // earlier page so the span covers only this page's portion.
+        const int signal = matcher.feed(buffer[j]);
+        if (signal > 0) {
+          // A whole-word match completed on buffer[j], but its trailing boundary
+          // is not yet known. Record the span now (buffer[j] is the match's last
+          // byte; it spans the preceding `signal` bytes, clamped to the page
+          // start when the match began on an earlier page) and keep feeding so
+          // the next byte can confirm or reject it.
           const int endByte = static_cast<int>(pageBytePos);
-          const int startByte = (pageBytePos + 1 >= static_cast<uint32_t>(matchWidth))
-                                    ? static_cast<int>(pageBytePos + 1 - static_cast<uint32_t>(matchWidth))
+          const int startByte = (pageBytePos + 1 >= static_cast<uint32_t>(signal))
+                                    ? static_cast<int>(pageBytePos + 1 - static_cast<uint32_t>(signal))
                                     : 0;
-          return {ScanStatus::Match, static_cast<int>(startPage + i), startByte, endByte};
+          matcher.setPendingMatchSpan(static_cast<int>(startPage + i), startByte, endByte);
+        } else if (signal < 0) {
+          // buffer[j] is a word boundary that confirms the pending match: report
+          // the span captured when it completed.
+          return {ScanStatus::Match, matcher.pendingPage(), matcher.pendingStartByte(), matcher.pendingEndByte()};
         }
         ++pageBytePos;
       }
+    }
+
+    // The record holds whole, space-separated words with no trailing separator,
+    // so its end is a word boundary too — unless a line-break hyphen carries the
+    // final word onto the next page. Confirm a match pending on this page's last
+    // word here, so it is reported on this page rather than waiting for the next.
+    if (matcher.hasPendingMatch() && !matcher.isHyphenPending()) {
+      return {ScanStatus::Match, matcher.pendingPage(), matcher.pendingStartByte(), matcher.pendingEndByte()};
     }
   }
 
