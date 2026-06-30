@@ -14,13 +14,6 @@
 #include "Section.h"
 #include "SectionCacheFormat.h"
 
-#ifdef SEARCH_PROFILE
-// Opt-in latency profiling: build firmware with -DSEARCH_PROFILE to log, per
-// scanned chunk, how the per-page scan time splits between SD I/O (seek+read)
-// and matcher CPU (feed()). Hardware-only: esp_timer is an ESP-IDF facility.
-#include <esp_timer.h>
-#endif
-
 using namespace epub;
 
 bool Section::ensureSearchHeader(ScanStatus& failureStatus) {
@@ -73,15 +66,6 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
   if (endPage > pageCount) {
     endPage = pageCount;
   }
-
-#ifdef SEARCH_PROFILE
-  // True when this is a section's first scan chunk (cache file not yet open /
-  // header not cached). Lets the per-chunk log below tell a cold-file cost apart
-  // from a post-e-ink-refresh shared-SPI-bus penalty: if the slow chunks are
-  // always firstOfSection=1 it is the file open; if firstOfSection=0 chunks are
-  // also slow it is the bus/refresh interaction.
-  const bool profSectionFirstChunk = !searchScan.headerReady || !file;
-#endif
 
   // File size and page-LUT offset are invariant per section; read them once.
   // ensureSearchHeader distinguishes a transient I/O failure from a corrupt
@@ -144,14 +128,6 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     }
     searchScan.textBufCapacity = TEXT_BUF_SIZE;
   }
-
-#ifdef SEARCH_PROFILE
-  // Per-page scan accounting. profStart covers only the page loop below, not the
-  // one-time header/LUT setup, so the split reflects the steady-state cost.
-  int64_t profCpuUs = 0;
-  uint64_t profBytes = 0;
-  const int64_t profStart = esp_timer_get_time();
-#endif
 
   // Sequentially read the text records
   for (uint16_t i = 0; i < count; i++) {
@@ -227,10 +203,6 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
         return {ScanStatus::IoError, -1};
       }
       remaining -= chunkSize;
-#ifdef SEARCH_PROFILE
-      profBytes += chunkSize;
-      const int64_t profChunkStart = esp_timer_get_time();
-#endif
 
       for (size_t j = 0; j < chunkSize; ++j) {
         const int signal = matcher.feed(searchScan.textBuf[j]);
@@ -252,9 +224,6 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
         }
         ++pageBytePos;
       }
-#ifdef SEARCH_PROFILE
-      profCpuUs += esp_timer_get_time() - profChunkStart;
-#endif
     }
 
     // The record holds whole, space-separated words with no trailing separator,
@@ -266,18 +235,5 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     }
   }
 
-#ifdef SEARCH_PROFILE
-  {
-    const unsigned long totalMs = static_cast<unsigned long>((esp_timer_get_time() - profStart) / 1000);
-    const unsigned long cpuMs = static_cast<unsigned long>(profCpuUs / 1000);
-    const unsigned long ioMs = totalMs > cpuMs ? totalMs - cpuMs : 0;
-    const float kbps = totalMs > 0 ? (static_cast<float>(profBytes) * 1000.0f) / (1024.0f * totalMs) : 0.0f;
-    LOG_INF("SCT",
-            "search profile: pages=%u textBytes=%lu total=%lums io(seek+read)=%lums cpu(feed)=%lums (%.1f KB/s) "
-            "firstOfSection=%d",
-            static_cast<unsigned>(count), static_cast<unsigned long>(profBytes), totalMs, ioMs, cpuMs,
-            static_cast<double>(kbps), profSectionFirstChunk ? 1 : 0);
-  }
-#endif
   return {ScanStatus::NoMatch, -1};
 }
