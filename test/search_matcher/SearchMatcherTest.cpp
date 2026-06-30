@@ -210,5 +210,6 @@ TEST(SearchMatcherQuery, ValidatesUsableQueries) {
 TEST(SearchMatcherQuery, EquivalenceIgnoresCaseAndFuzz) {
   EXPECT_TRUE(SearchMatcher::queriesEquivalent("Cat", "cat"));
   EXPECT_TRUE(SearchMatcher::queriesEquivalent("mother-in-law", "motherinlaw"));
+  EXPECT_TRUE(SearchMatcher::queriesEquivalent("caf\xC3\xA9", "cafe\xCC\x81"));
   EXPECT_FALSE(SearchMatcher::queriesEquivalent("cat", "dog"));
 }
