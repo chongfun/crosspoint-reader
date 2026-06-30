@@ -47,8 +47,8 @@ The user-visible behavior is intentionally narrow:
   of the scan has completed, measured from where the search began (so it rises
   from 0% to 100% over the whole scan even when the search starts mid-book)
 
-The result is page-granular. The reader opens the matching page, shows a short
-confirmation popup, and highlights the matched words on the page.
+The result is page-granular. The reader opens the matching page and highlights
+the matched words on the page.
 
 ## Component flow
 
@@ -73,7 +73,7 @@ The responsibilities are split as follows:
 
 - `EpubReaderMenuActivity` exposes the existing translated `Search` command.
 - `EpubReaderActivity` owns query history and coordinates the keyboard, search
-  activity, reader position, and result popup.
+  activity, reader position, and result highlighting.
 - `SearchHighlighter` encapsulates the transient on-page text highlighting logic.
   It is a pure consumer of the byte span the scan reports for the matched page:
   it maps that span to the page's words and paints them, without re-running the
@@ -165,7 +165,7 @@ and may grow the vector.
 
 The search feature adds no static RAM: a `default` build measured 102,516 bytes
 of static RAM both with the feature and on its pre-search base (`main`). Flash
-grew by about 13,750 bytes in that same comparison (6,344,661 to 6,358,411
+grew by about 14,084 bytes in that same comparison (6,344,661 to 6,358,745
 bytes) for the search behavior, cache handling, on-page highlighting, UI, and
 translated strings. These are build snapshots rather than permanent budgets;
 remeasure them when the implementation or toolchain changes.
