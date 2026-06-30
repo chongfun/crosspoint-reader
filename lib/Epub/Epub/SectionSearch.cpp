@@ -74,6 +74,15 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     endPage = pageCount;
   }
 
+#ifdef SEARCH_PROFILE
+  // True when this is a section's first scan chunk (cache file not yet open /
+  // header not cached). Lets the per-chunk log below tell a cold-file cost apart
+  // from a post-e-ink-refresh shared-SPI-bus penalty: if the slow chunks are
+  // always firstOfSection=1 it is the file open; if firstOfSection=0 chunks are
+  // also slow it is the bus/refresh interaction.
+  const bool profSectionFirstChunk = !searchScan.headerReady || !file;
+#endif
+
   // File size and page-LUT offset are invariant per section; read them once.
   // ensureSearchHeader distinguishes a transient I/O failure from a corrupt
   // header so we do not delete a valid cache over a momentary glitch.
@@ -263,9 +272,11 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     const unsigned long cpuMs = static_cast<unsigned long>(profCpuUs / 1000);
     const unsigned long ioMs = totalMs > cpuMs ? totalMs - cpuMs : 0;
     const float kbps = totalMs > 0 ? (static_cast<float>(profBytes) * 1000.0f) / (1024.0f * totalMs) : 0.0f;
-    LOG_INF("SCT", "search profile: pages=%u textBytes=%lu total=%lums io(seek+read)=%lums cpu(feed)=%lums (%.1f KB/s)",
+    LOG_INF("SCT",
+            "search profile: pages=%u textBytes=%lu total=%lums io(seek+read)=%lums cpu(feed)=%lums (%.1f KB/s) "
+            "firstOfSection=%d",
             static_cast<unsigned>(count), static_cast<unsigned long>(profBytes), totalMs, ioMs, cpuMs,
-            static_cast<double>(kbps));
+            static_cast<double>(kbps), profSectionFirstChunk ? 1 : 0);
   }
 #endif
   return {ScanStatus::NoMatch, -1};
