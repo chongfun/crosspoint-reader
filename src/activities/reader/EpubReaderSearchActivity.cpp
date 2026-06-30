@@ -98,6 +98,11 @@ void EpubReaderSearchActivity::onEnter() {
   // Paint the status screen before an uncached chapter starts its potentially
   // long layout pass.
   requestUpdateAndWait();
+  // Seed the repaint throttle from this initial 0% paint so the first nonzero
+  // percent waits a full interval instead of firing an immediate second refresh
+  // (lastProgressRepaintMs starts at 0, which the time gate would treat as long
+  // overdue).
+  lastProgressRepaintMs = millis();
 }
 
 void EpubReaderSearchActivity::onExit() { Activity::onExit(); }
