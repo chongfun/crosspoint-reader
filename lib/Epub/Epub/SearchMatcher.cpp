@@ -51,6 +51,7 @@ size_t SearchMatcher::normalizeSearchQuery(const std::string_view query, std::ar
   size_t len = 0;
   uint32_t utf8State = 0;
   uint32_t utf8Codepoint = 0;
+  bool prevWasHyphen = false;
 
   for (const char ch : query) {
     const uint8_t c = static_cast<uint8_t>(ch);
@@ -90,14 +91,41 @@ size_t SearchMatcher::normalizeSearchQuery(const std::string_view query, std::ar
       uint8_t b = (norm >> shift) & 0xFF;
       if (b == 0) break;
 
-      if (epub::isSearchSeparator(b)) {
+      if (b == '-') {
+        // Hyphens are fuzzy: dropped from the query (and the text) so a
+        // hyphenated word, including one split across a line, still matches.
+        prevWasHyphen = true;
         continue;
       }
+      if (b == ' ') {
+        // A space right after a hyphen is the word separator that line-break
+        // hyphenation leaves between the two halves; drop it so they rejoin.
+        // Otherwise a space is a significant word boundary: collapse runs and
+        // drop a leading space so the pattern lines up with the text record.
+        if (prevWasHyphen) {
+          prevWasHyphen = false;
+          continue;
+        }
+        if (len == 0 || out[len - 1] == ' ') {
+          continue;
+        }
+        if (len < out.size()) {
+          out[len++] = ' ';
+        }
+        continue;
+      }
+
+      prevWasHyphen = false;
       if (len >= out.size()) {
         break;
       }
       out[len++] = b;
     }
+  }
+  // Drop a trailing significant space so the pattern is not forced to end on a
+  // word boundary that the text record may not provide.
+  if (len > 0 && out[len - 1] == ' ') {
+    --len;
   }
   return len;
 }
@@ -185,12 +213,29 @@ int SearchMatcher::feed(uint8_t c) {
     uint8_t b = (norm >> shift) & 0xFF;
     if (b == 0) break;
 
-    if (epub::isSearchSeparator(b)) {
+    // Classify the byte as fuzzy (dropped) or a significant character. Hyphens
+    // are always dropped. A space is dropped only when it directly follows a
+    // hyphen (the separator a line-break hyphenation leaves between the two
+    // halves) or another space (run collapse); every other space is significant
+    // and must be matched, so a query without a space cannot cross a word
+    // boundary. Dropped bytes still extend the match span via pendingSeparatorBytes.
+    bool dropAsSeparator = false;
+    if (b == '-') {
+      prevWasHyphen = true;
+      dropAsSeparator = true;
+    } else if (b == ' ' && (prevWasHyphen || lastEmittedWasSpace)) {
+      prevWasHyphen = false;
+      dropAsSeparator = true;
+    }
+    if (dropAsSeparator) {
       if (matched > 0) {
         pendingSeparatorBytes += currentCodepointWidth;
       }
       continue;
     }
+
+    prevWasHyphen = false;
+    lastEmittedWasSpace = (b == ' ');
 
     const uint8_t value = b;
 

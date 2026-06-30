@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- In-book search now respects spaces: a search term no longer matches across a word boundary it does not contain (so it can't start in the middle of one word and end in the middle of the next), while still matching words broken by hyphenation, including across a line or page break.
+
 ### Fixed
 
 - Search-result highlights are now readable in dark mode; previously the inverted highlight was drawn black-on-black and disappeared.

@@ -155,6 +155,16 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       continue;
     }
 
+    // serializeSearchText writes no separator between pages, so feed an explicit
+    // word boundary before each page's content. This keeps page boundaries
+    // consistent with in-page word boundaries (a query without a space cannot run
+    // two words together across a page break) and lets a page-final line-break
+    // hyphen rejoin with the continuation word (the matcher drops a space right
+    // after a hyphen). The injected byte is not part of the record, so it is not
+    // counted in pageBytePos; it can never complete a match because a compiled
+    // query never ends in a space.
+    matcher.feed(' ');
+
     // Byte offset of the next fed byte within this page's text record content
     // (the bytes after the u32 length prefix). Used to report where a completed
     // match lies so the highlighter can map it to words without re-scanning.

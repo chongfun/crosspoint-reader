@@ -183,26 +183,27 @@ typographic ligatures. This is implemented as a sequence of packed logic gates i
 flash, requiring zero RAM overhead. Rendered EPUB words are already NFC-composed by the layout
 pipeline. General full-Unicode normalization is not performed.
 
-ASCII spaces and hyphens are treated as insignificant on both sides:
-`normalizeSearchQuery()` drops them from the query (and the KMP prefix table is
-built over that normalized form), and the page scan skips the same bytes in the
-record. This lets a query match across the artifacts the rendered text
-introduces — most importantly a word the layout split across a line break,
-which is stored as `"<frag>-"` plus a space plus `"<frag>"` — and makes spacing
-differences between the query and the rendered tokens irrelevant. The
-consequence is that matching is space- and hyphen-agnostic: `"the cat"`,
-`"thecat"`, and `"the-cat"` are equivalent, which can occasionally match across
-an unrelated word boundary. This is a deliberate extension of the matcher's
-existing substring behavior (a query already matches inside a longer word) and
-favors finding a half-remembered passage — e.g. a location last read on another
-device or in print — over exact-span precision.
+Hyphens are insignificant on both sides, but spaces are significant. Hyphens are
+dropped from the query (the KMP prefix table is built over that normalized form)
+and skipped in the record, so a hyphenated word matches its unhyphenated query —
+both a hard hyphen (`"mother-in-law"` matches `"motherinlaw"`) and a layout
+line-break hyphen, which is stored as `"<frag>-"` plus a space plus `"<frag>"`.
+Spaces, by contrast, are matched: a query without a space cannot run two words
+together, so it can no longer start in the middle of one word and end in the
+middle of the next (`"heran"` does not match `"the rang"`). The one exception is
+a space immediately following a hyphen — the separator a line-break hyphenation
+leaves between the two halves — which is dropped so the halves rejoin
+(`"international"` matches the stored `"inter- national"`). Runs of spaces collapse
+and leading/trailing spaces are trimmed so query spacing lines up with the
+single-space record. A query may still match a substring inside a longer word
+(`"cat"` matches `"category"`); that within-word substring behavior is unchanged.
 
 Codepoints with no ASCII or Latin folding (CJK, Cyrillic, Greek, unmapped
-symbols, etc.) normalize to nothing and are dropped on **both** sides, exactly
-like spaces and hyphens. So `"a你b"` is treated as `"ab"` on the query side and
-the page side alike, and a search for `"ab"` will match it. This is the same
-fuzzy class as the space/hyphen bridging above, not a separate behavior, and it
-is intentional rather than a missing boundary check. The needle is an ASCII-only
+symbols, etc.) normalize to nothing and are dropped on **both** sides, like
+hyphens. So `"a你b"` is treated as `"ab"` on the query side and the page side
+alike, and a search for `"ab"` will match it. This is the same fuzzy class as the
+hyphen bridging above, not a separate behavior, and it is intentional rather than
+a missing boundary check. The needle is an ASCII-only
 `uint8_t` array, so an unsupported codepoint can never appear *in* a pattern;
 treating it as a hard boundary instead of dropping it would not make `"a你b"`
 matchable — it would only stop the text `"a你b"` from matching its own exact
@@ -213,14 +214,19 @@ The matcher's KMP partial-match length is carried across consecutive pages of
 the same spine, so a query split across a *page* boundary still matches — for
 example a word the layout hyphenated at the foot of one page (`"…inter-"`) and
 continued at the top of the next (`"national…"`), or any phrase that straddles
-the break. The carried state is reset at every reading-order discontinuity (the
-scan's first page, a spine/chapter change, the single wrap, and any image-only
-page with an empty text record), so it never bridges non-contiguous text. A
-cross-page match is reported on the page where it *completes* (the second page),
-which is where the reader opens.
+the break. Because the record stores no separator between pages, the scan feeds
+an explicit word-boundary space before each page's content; this makes a page
+boundary behave like an in-page word boundary (a spaceless query cannot run two
+pages' words together) while still letting a page-final line-break hyphen rejoin
+its continuation (the space after the hyphen is dropped). The injected space is
+not part of the record, so it is not counted in the reported match offsets. The
+carried state is reset at every reading-order discontinuity (a spine/chapter
+change, the single wrap, and any image-only page with an empty text record), so
+it never bridges non-contiguous text. A cross-page match is reported on the page
+where it *completes* (the second page), which is where the reader opens.
 
 The return type is `Section::ScanResult`, a `Section::ScanStatus` plus a `page`
-index (valid only on `Match`):
+index and the match's byte span (all valid only on `Match`):
 
 - `ScanStatus::Match`: a match was found; `page` holds the page index.
 - `ScanStatus::NoMatch`: the requested range was scanned (or was empty) with no
@@ -330,12 +336,13 @@ prevents automatic sleep while searching.
 - Case-insensitive matching and diacritic folding are supported for ASCII and common Latin characters. Characters outside the supported Latin set must match exactly.
 - Search text is reconstructed from rendered word tokens with single spaces, so
   it can differ from the EPUB source in spacing and in words split by layout-time
-  hyphenation. Matching ignores ASCII spaces and hyphens and carries match state
-  across adjacent same-spine pages to absorb these — including hyphenation and
-  phrases split across a page boundary (see Matching algorithm). Other
-  punctuation-glyph differences (curly vs straight quotes, em dash, the ellipsis
-  character vs three dots) are not normalized and can still cause a miss, and a
-  match split across a chapter (spine) boundary is not joined.
+  hyphenation. Matching ignores hyphens but respects spaces, and carries match
+  state across adjacent same-spine pages, so it absorbs hyphenation (hard and
+  line-break, including across a page boundary) while still treating spaces as
+  word boundaries (see Matching algorithm). Other punctuation-glyph differences
+  (curly vs straight quotes, em dash, the ellipsis character vs three dots) are
+  not normalized and can still cause a miss, and a match split across a chapter
+  (spine) boundary is not joined.
 - Search results depend on the current layout settings. Font, viewport,
   orientation, margins, paragraph settings, hyphenation, embedded CSS, image
   mode, or Focus Reading changes can invalidate and rebuild section caches.
@@ -398,29 +405,30 @@ heap alone is insufficient to detect fragmentation.
   across page boundaries with page attribution. This targets SD seek latency,
   the likely dominant cost, more directly than any change to the matching
   algorithm.
-- Store a source-faithful (de-hyphenated) search text. Matching already ignores
-  ASCII spaces and hyphens and carries state across adjacent same-spine pages
-  (see Matching algorithm), which absorbs layout-time hyphenation and spacing
-  differences — including across page boundaries — at no extra storage cost. The
-  remaining gap is *exact-spacing* search: because spaces and hyphens are
-  insignificant, the matcher cannot distinguish `"the cat"` from `"thecat"`, and
-  a query can occasionally match across an unrelated word boundary. Closing that
-  would require the record to store the actual source token stream with correct
-  join/no-join boundaries instead of the rendered tokens. The cost is the reason
-  this is deferred:
+- Store a source-faithful (de-hyphenated) search text. Matching now respects
+  spaces (a spaceless query cannot cross a word boundary) while still ignoring
+  hyphens and carrying state across adjacent same-spine pages, so layout-time
+  hyphenation — hard, line-break, and across page boundaries — is absorbed without
+  the old fuzzy whole-stream straddle (see Matching algorithm). Two residual gaps
+  remain, both minor: the line-break-hyphen rejoin is a heuristic (a space
+  immediately after a hyphen is treated as a soft line break), so a source hyphen
+  at the very end of a word followed by a space would also be rejoined; and a
+  multi-word query can still match mid-word at its own ends if its internal space
+  aligns with the text. Closing these fully would require the record to store the
+  actual source token stream with correct join/no-join boundaries instead of the
+  rendered tokens. The cost is the reason it is deferred:
   - The metadata needed (`ParsedText::wordContinues` / `wordNoSpaceBefore`, and
-    where `hyphenateWordAtIndex()` split a word) exists during layout but is
-    discarded at the `TextBlock` boundary — `Page::serializeSearchText()` only
-    sees the rendered tokens, with a visible `-` already pushed onto a
-    line-broken fragment, so it cannot tell `"well-"`+`"known"` (rejoin as
-    `well-known`) from `"inter-"`+`"national"` (rejoin as `international`).
+    where `hyphenateWordAtIndex()` split a word, flagged `WORD_FLAG_INSERTED_HYPHEN`)
+    exists during layout but is discarded at the `TextBlock` boundary —
+    `Page::serializeSearchText()` only sees the rendered tokens, with a visible
+    `-` already pushed onto a line-broken fragment.
   - Fixing it means threading per-token join information from the line breaker
     to the search-text writer — either by adding a per-word "joins previous
     without space" flag to `TextBlock` (which **bumps the section cache version
     and rebuilds all caches**) or by surfacing per-page continuation flags
     through the page-emit callback. Either touches the layout pipeline, the most
     performance- and stability-sensitive code in the project.
-  Defer until exact-spacing search is actually wanted; the current normalized
-  matching is the better trade for finding a half-remembered passage.
+  Defer until the residual gaps actually bite; the current matching already
+  respects word boundaries while staying tolerant of layout hyphenation.
 - Normalize punctuation for cross-medium search. Even with space/hyphen folding,
   curly vs straight quotes and em dash vs hyphen can still cause a miss.

@@ -20,7 +20,10 @@ class SearchMatcher {
   bool compile(std::string_view query);
 
   // Feed one byte into the matcher. Decodes UTF-8 and maps Latin diacritics.
-  // Separator characters (spaces and hyphens) are ignored and skipped.
+  // Hyphens are ignored (fuzzy), as is the word-separator space a line-break
+  // hyphenation leaves between a split word's halves; every other space is a
+  // significant character that must be matched, so a query cannot cross a word
+  // boundary it does not itself contain.
   // Returns the total raw byte width of the full match if completed, or 0 otherwise.
   int feed(uint8_t c);
 
@@ -32,6 +35,8 @@ class SearchMatcher {
     pendingSeparatorBytes = 0;
     widthBufferHead = 0;
     currentCodepointId = 0;
+    prevWasHyphen = false;
+    lastEmittedWasSpace = false;
   }
 
   bool hasPartialMatch() const { return matched > 0; }
@@ -53,6 +58,12 @@ class SearchMatcher {
   uint16_t pendingSeparatorBytes = 0;
   uint8_t widthBufferHead = 0;
   uint32_t currentCodepointId = 0;
+  // True when the previous codepoint was a dropped hyphen, so the next space is
+  // treated as a line-break join and dropped. True when the last emitted byte
+  // was a space, so runs of spaces collapse to one. Both span the byte stream
+  // fed so far and are cleared by reset().
+  bool prevWasHyphen = false;
+  bool lastEmittedWasSpace = false;
 
   static size_t normalizeSearchQuery(std::string_view query, std::array<uint8_t, MAX_QUERY_BYTES>& out);
 };
