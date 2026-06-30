@@ -198,6 +198,15 @@ int SearchMatcher::feed(uint8_t c) {
   uint32_t norm = stripLatinDiacritics(utf8Codepoint);
 
   if (norm == 0) {
+    // A codepoint outside the supported fold set (CJK, Cyrillic, etc.) is
+    // dropped before matching, exactly like a fuzzy hyphen/space. Carry its raw
+    // UTF-8 width so a match that straddles it still spans the full text, e.g.
+    // "a你b" matching "ab" highlights all five bytes. Reset the byte counter so
+    // the next codepoint's width starts clean.
+    if (matched > 0) {
+      pendingSeparatorBytes += utf8BytesConsumed;
+    }
+    utf8BytesConsumed = 0;
     return 0;
   }
 
