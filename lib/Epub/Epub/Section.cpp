@@ -16,12 +16,6 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-// v28: page LUT entries include offsets to compact text records used by search.
-constexpr uint8_t SECTION_FILE_VERSION = 28;
-constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
-                                 sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
-                                 sizeof(uint8_t) + sizeof(bool) + sizeof(uint32_t) + sizeof(uint32_t) +
-                                 sizeof(uint32_t) + sizeof(uint32_t);
 
 struct PageLutEntry {
   uint32_t fileOffset;
@@ -33,17 +27,11 @@ static_assert(sizeof(PageLutEntry) == 12, "Unexpected PageLutEntry padding chang
 
 // On-disk page LUT stride: only pageOffset and searchTextOffset are stored
 // inline; paragraphIndex and listItemIndex are written to separate LUTs.
-constexpr size_t PAGE_LUT_ENTRY_SIZE = sizeof(uint32_t) * 2;
 // Bind the stride to the two inline offset fields so adding or resizing an
 // inline LUT field can't silently desync it from the write/read sites.
-static_assert(PAGE_LUT_ENTRY_SIZE == sizeof(PageLutEntry::fileOffset) + sizeof(PageLutEntry::searchTextOffset),
+static_assert(Section::PAGE_LUT_ENTRY_SIZE == sizeof(PageLutEntry::fileOffset) + sizeof(PageLutEntry::searchTextOffset),
               "On-disk page-LUT stride must match the inline offset fields");
 
-// ASCII bytes treated as insignificant during search, dropped from both the
-// query and the scanned record so layout-time hyphenation (a word split across
-// a line break stores "<frag>-" + space + "<frag>") and spacing differences
-// between the query and the rendered text do not block a match.
-constexpr bool isSearchSeparator(const uint8_t b) { return b == ' ' || b == '-'; }
 }  // namespace
 
 uint32_t Section::onPageComplete(std::unique_ptr<Page> page, uint32_t& searchTextOffset) {
@@ -470,148 +458,6 @@ bool Section::ensureSearchHeader() {
   searchLutOffset = lutOffset;
   searchHeaderReady = true;
   return true;
-}
-
-bool Section::isValidSearchQuery(const std::string_view query) {
-  if (query.empty() || query.size() > MAX_SEARCH_QUERY_BYTES) {
-    return false;
-  }
-  // Require at least one byte that survives normalization. The matcher ignores
-  // ASCII spaces and hyphens (see normalizeSearchQuery), so a query of only
-  // whitespace and/or hyphens normalizes to nothing and can never match; the UI
-  // gate must agree with the matcher on what is searchable.
-  return std::any_of(query.begin(), query.end(),
-                     [](const unsigned char value) { return std::isspace(value) == 0 && !isSearchSeparator(value); });
-}
-
-size_t Section::normalizeSearchQuery(const std::string_view query, std::array<uint8_t, MAX_SEARCH_QUERY_BYTES>& out) {
-  size_t len = 0;
-  for (const char c : query) {
-    const uint8_t b = static_cast<uint8_t>(c);
-    if (isSearchSeparator(b)) {
-      continue;
-    }
-    if (len >= out.size()) {
-      break;  // defensive; callers reject query.size() > MAX_SEARCH_QUERY_BYTES
-    }
-    out[len++] = epub::asciiToLower(b);
-  }
-  return len;
-}
-
-bool Section::compileSearchQuery(const std::string_view query, CompiledSearchQuery& out) {
-  // Leave the result in a defined (zeroed, length 0) state even on rejection, so
-  // a caller that ignores the return value never matches against stale bytes.
-  out = CompiledSearchQuery{};
-  // One validity definition (empty / oversized / no searchable byte) shared with
-  // the UI gate; a query that passes always normalizes to a non-empty pattern.
-  if (!isValidSearchQuery(query)) {
-    return false;
-  }
-
-  // Normalize once (lowercase, spaces/hyphens dropped); the KMP table is built
-  // over that same pattern, so pattern and prefix can never disagree.
-  out.length = normalizeSearchQuery(query, out.pattern);
-
-  for (size_t i = 1, matched = 0; i < out.length; ++i) {
-    const uint8_t value = out.pattern[i];
-    while (matched > 0 && value != out.pattern[matched]) {
-      matched = out.prefix[matched - 1];
-    }
-    if (value == out.pattern[matched]) {
-      ++matched;
-    }
-    out.prefix[i] = static_cast<uint8_t>(matched);
-  }
-  return true;
-}
-
-std::optional<bool> Section::pageContainsText(const uint16_t page, const CompiledSearchQuery& query, size_t& matched) {
-  if (query.length == 0 || page >= pageCount) {
-    LOG_ERR("SCT", "Invalid page search request (page=%u count=%u patternLen=%u)", page, pageCount,
-            static_cast<unsigned>(query.length));
-    return std::nullopt;
-  }
-
-  // File size and page-LUT offset are invariant per section; read them once.
-  if (!ensureSearchHeader()) {
-    return std::nullopt;
-  }
-  const uint32_t fileSize = searchFileSize;
-  const uint32_t lutOffset = searchLutOffset;
-
-  // Compute in 64-bit so a corrupt (huge) lutOffset cannot wrap the uint32 sum
-  // into a small in-bounds value that slips past the fileSize bounds check.
-  const uint64_t entryOffset = static_cast<uint64_t>(lutOffset) + static_cast<uint64_t>(PAGE_LUT_ENTRY_SIZE) * page;
-  if (lutOffset == 0 || entryOffset > fileSize || fileSize - entryOffset < PAGE_LUT_ENTRY_SIZE) {
-    LOG_ERR("SCT", "Search failed: invalid page LUT entry");
-    return std::nullopt;
-  }
-
-  if (!file.seek(static_cast<size_t>(entryOffset) + sizeof(uint32_t))) {
-    LOG_ERR("SCT", "Search failed: could not seek to page LUT entry");
-    return std::nullopt;
-  }
-  uint32_t searchTextOffset = 0;
-  if (file.read(reinterpret_cast<uint8_t*>(&searchTextOffset), sizeof(searchTextOffset)) != sizeof(searchTextOffset) ||
-      searchTextOffset > fileSize || fileSize - searchTextOffset < sizeof(uint32_t)) {
-    LOG_ERR("SCT", "Search failed: invalid text record offset");
-    return std::nullopt;
-  }
-
-  if (!file.seek(searchTextOffset)) {
-    LOG_ERR("SCT", "Search failed: could not seek to text record");
-    return std::nullopt;
-  }
-  uint32_t remaining = 0;
-  if (file.read(reinterpret_cast<uint8_t*>(&remaining), sizeof(remaining)) != sizeof(remaining) ||
-      remaining > fileSize - searchTextOffset - sizeof(uint32_t)) {
-    LOG_ERR("SCT", "Search failed: invalid text record length");
-    return std::nullopt;
-  }
-
-  // A page with no searchable text (e.g. image-only) is a content discontinuity,
-  // so drop any carried partial match rather than bridging across it.
-  if (remaining == 0) {
-    matched = 0;
-    return false;
-  }
-
-  // KMP keeps overlap handling correct while streaming through a 64-byte SD
-  // read buffer. The query's normalized pattern and failure table were compiled
-  // once (compileSearchQuery); the scan skips spaces and hyphens in the record
-  // so layout hyphenation and spacing differences do not block a match. `matched`
-  // is carried in from the previous adjacent page so a query split across a page
-  // boundary still matches.
-  // Left uninitialized: file.read() fills chunkSize bytes and only [0,chunkSize)
-  // is ever read, so the per-page zero-fill would be dead work.
-  std::array<uint8_t, 64> buffer;
-  while (remaining > 0) {
-    const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
-    if (file.read(buffer.data(), chunkSize) != chunkSize) {
-      LOG_ERR("SCT", "Search failed: truncated text record");
-      return std::nullopt;
-    }
-    remaining -= chunkSize;
-
-    for (size_t i = 0; i < chunkSize; ++i) {
-      if (isSearchSeparator(buffer[i])) {
-        continue;  // spaces/hyphens are insignificant on both sides
-      }
-      const uint8_t value = epub::asciiToLower(buffer[i]);
-      while (matched > 0 && value != query.pattern[matched]) {
-        matched = query.prefix[matched - 1];
-      }
-      if (value == query.pattern[matched]) {
-        ++matched;
-        if (matched == query.length) {
-          return true;
-        }
-      }
-    }
-  }
-
-  return false;
 }
 
 std::string Section::getTextFromSectionFile() {

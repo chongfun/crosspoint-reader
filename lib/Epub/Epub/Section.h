@@ -13,6 +13,15 @@ class Page;
 class GfxRenderer;
 
 class Section {
+ public:
+  static constexpr uint8_t SECTION_FILE_VERSION = 28;
+  static constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) +
+                                          sizeof(uint8_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) +
+                                          sizeof(bool) + sizeof(bool) + sizeof(uint8_t) + sizeof(bool) +
+                                          sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint32_t);
+  static constexpr size_t PAGE_LUT_ENTRY_SIZE = sizeof(uint32_t) * 2;
+
+ private:
   std::shared_ptr<Epub> epub;
   int spineIndex;
   GfxRenderer& renderer;
@@ -48,7 +57,6 @@ class Section {
   void rebuildFilePathForSpine();
 
  public:
-  static constexpr size_t MAX_SEARCH_QUERY_BYTES = 64;
   uint16_t pageCount = 0;
   int currentPage = 0;
 
@@ -78,41 +86,37 @@ class Section {
   // allocation. Intended for sequential, book-wide operations such as search.
   void resetForSpine(int newSpineIndex);
 
-  // Single source of truth for whether a query is usable for search: non-empty,
-  // not all-whitespace, and within the byte limit. The UI validates with this
-  // before launching a search.
-  static bool isValidSearchQuery(std::string_view query);
+  // Close the lazily-opened scan file and invalidate the cached header. scanForward()
+  // intentionally leaves the file open between chunked scans (resetForSpine() closes
+  // it when advancing spines); a one-shot caller such as the search highlighter, which
+  // primes the matcher on the reader's live Section, must call this afterwards so the
+  // reader does not sit on an open SD handle (only one file may be open at a time on HW).
+  void closeSearchState();
 
-  // A query compiled once for a whole-book search: the normalized pattern
-  // (lowercase, spaces and hyphens dropped), its length, and the KMP failure
-  // table over it. Built by compileSearchQuery(), consumed by pageContainsText().
-  struct CompiledSearchQuery {
-    std::array<uint8_t, MAX_SEARCH_QUERY_BYTES> pattern{};
-    std::array<uint8_t, MAX_SEARCH_QUERY_BYTES> prefix{};
-    size_t length = 0;
+  enum class ScanStatus : uint8_t {
+    Match,         // a match was found; `page` holds the page index
+    NoMatch,       // the requested range was scanned with no match (or was empty)
+    CorruptCache,  // structurally invalid cache data; a rebuild may help
+    IoError,       // seek/open failure or OOM; rebuilding will not help
   };
 
-  // Normalize a query for matching: fold ASCII A-Z to lowercase and drop ASCII
-  // spaces and hyphens (so layout-time hyphenation and spacing differences do
-  // not block a match). Writes the normalized bytes into `out` and returns the
-  // normalized length.
-  static size_t normalizeSearchQuery(std::string_view query, std::array<uint8_t, MAX_SEARCH_QUERY_BYTES>& out);
+  struct ScanResult {
+    ScanStatus status = ScanStatus::NoMatch;
+    int page = -1;  // valid only when status == Match
+    // Byte span of the match within `page`'s serialized search-text record
+    // (inclusive), valid only when status == Match. startByte is clamped to 0
+    // when the match began on an earlier page, so [matchStartByte, matchEndByte]
+    // always covers the portion that lies on `page`. SearchHighlighter maps this
+    // span to the page's words without re-running the matcher.
+    int matchStartByte = -1;
+    int matchEndByte = -1;
+  };
 
-  // Compile a query once for a book-wide search: normalize it and build the KMP
-  // failure table over the result, so every page scan reuses one consistent
-  // pattern + table. Returns false for an empty/oversized query or one that
-  // normalizes to nothing (e.g. only spaces or hyphens).
-  static bool compileSearchQuery(std::string_view query, CompiledSearchQuery& out);
-
-  // Streams the compact text record for one page through a fixed-size buffer,
-  // matching the compiled query while skipping spaces and hyphens in the record.
-  // `matched` is the KMP partial-match length carried in and out: pass the value
-  // left by the previous adjacent page so a query split across a page boundary
-  // (e.g. a line-hyphenated word, "inter-" then "national") still matches; the
-  // caller must reset it to 0 at any reading-order discontinuity (scan start,
-  // spine change, wrap). An empty record resets it. nullopt indicates an
-  // invalid/corrupt cache record; false is a valid miss.
-  std::optional<bool> pageContainsText(uint16_t page, const CompiledSearchQuery& query, size_t& matched);
+  // Search forward through cached section pages from `startPage` up to `endPage`,
+  // batching LUT reads and streaming text records sequentially. Returns Match
+  // with the first matching page index, NoMatch when the range is exhausted, or
+  // a failure status distinguishing corrupt-cache from transient I/O.
+  ScanResult scanForward(uint16_t startPage, uint16_t endPage, class SearchMatcher& matcher);
 
   // Look up the page number for an anchor id from the section cache file.
   std::optional<uint16_t> getPageForAnchor(const std::string& anchor) const;
