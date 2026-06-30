@@ -1,6 +1,7 @@
 #include "EpubReaderActivity.h"
 
 #include <Arduino.h>
+#include <Epub/AsciiCase.h>
 #include <Epub/Page.h>
 #include <Epub/SearchMatcher.h>
 #include <Epub/blocks/TextBlock.h>
@@ -22,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <string_view>
 
 #include "../settings/KOReaderSettingsActivity.h"
 #include "BookStatsActivity.h"
@@ -58,6 +60,23 @@
 #include "util/ScreenshotUtil.h"
 
 namespace {
+// True when two queries differ only by ASCII letter case, matching how the
+// search matcher folds A-Z. Keeps relaunching "Foo" after "foo" a "same query"
+// so find-next continues from the last result instead of restarting the scan.
+// Non-ASCII bytes are compared verbatim (the matcher's deeper folding is not
+// re-applied here; case is the only difference that matters for this gate).
+bool searchQueriesEquivalent(const std::string_view a, const std::string_view b) {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (epub::asciiToLower(static_cast<uint8_t>(a[i])) != epub::asciiToLower(static_cast<uint8_t>(b[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // pagesPerRefresh now comes from SETTINGS.getRefreshFrequency()
 constexpr unsigned long longPressMenuMs = 600;
 constexpr uint16_t DEFAULT_AUTO_PAGE_TURN_INTERVAL_S = 30;
@@ -3323,7 +3342,7 @@ void EpubReaderActivity::launchBookSearch(const std::string& query) {
   // pending page remap for realSpine.
   const bool realSectionLoaded = section != nullptr && !previewingFootnote;
 
-  const bool sameQuery = strcmp(lastSearchQuery.data(), query.c_str()) == 0;
+  const bool sameQuery = searchQueriesEquivalent(lastSearchQuery.data(), query);
   // Resolve the start spine/page and the fresh-vs-"find next" decision in one
   // pure, host-testable place rather than inline here. The route owns the
   // start/stop relationship (a wrap stops before re-examining the originating
