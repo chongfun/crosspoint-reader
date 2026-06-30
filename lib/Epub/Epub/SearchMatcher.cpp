@@ -47,6 +47,14 @@ bool SearchMatcher::isValidSearchQuery(const std::string_view query) {
   return normalizeSearchQuery(query, dummy) > 0;
 }
 
+bool SearchMatcher::queriesEquivalent(const std::string_view a, const std::string_view b) {
+  std::array<uint8_t, MAX_QUERY_BYTES> normA{};
+  std::array<uint8_t, MAX_QUERY_BYTES> normB{};
+  const size_t lenA = normalizeSearchQuery(a, normA);
+  const size_t lenB = normalizeSearchQuery(b, normB);
+  return lenA == lenB && std::equal(normA.begin(), normA.begin() + lenA, normB.begin());
+}
+
 size_t SearchMatcher::normalizeSearchQuery(const std::string_view query, std::array<uint8_t, MAX_QUERY_BYTES>& out) {
   size_t len = 0;
   uint32_t utf8State = 0;

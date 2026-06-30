@@ -13,6 +13,13 @@ class SearchMatcher {
   // before launching a search.
   static bool isValidSearchQuery(std::string_view query);
 
+  // True when two queries normalize to the same byte sequence under the exact
+  // folding compile() applies (case, Latin diacritics, hyphen/space fuzzing).
+  // Lets a caller decide whether a relaunched search is "the same query" — so
+  // find-next continues from the last result instead of restarting the scan —
+  // using the matcher's full normalization rather than a partial ASCII compare.
+  static bool queriesEquivalent(std::string_view a, std::string_view b);
+
   // Compile a query once for a book-wide search: normalize it and build the KMP
   // failure table over the result, so every page scan reuses one consistent
   // pattern + table. Returns false for an empty/oversized query or one that
