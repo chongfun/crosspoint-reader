@@ -207,8 +207,8 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       for (size_t j = 0; j < chunkSize; ++j) {
         const int signal = matcher.feed(searchScan.textBuf[j]);
         if (signal > 0) {
-          // A whole-word match completed on buffer[j], but its trailing boundary
-          // is not yet known. Record the span now (buffer[j] is the match's last
+          // A whole-word match completed on textBuf[j], but its trailing boundary
+          // is not yet known. Record the span now (textBuf[j] is the match's last
           // byte; it spans the preceding `signal` bytes, clamped to the page
           // start when the match began on an earlier page) and keep feeding so
           // the next byte can confirm or reject it.
@@ -218,7 +218,7 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
                                     : 0;
           matcher.setPendingMatchSpan(static_cast<int>(startPage + i), startByte, endByte);
         } else if (signal < 0) {
-          // buffer[j] is a word boundary that confirms the pending match: report
+          // textBuf[j] is a word boundary that confirms the pending match: report
           // the span captured when it completed.
           return {ScanStatus::Match, matcher.pendingPage(), matcher.pendingStartByte(), matcher.pendingEndByte()};
         }
