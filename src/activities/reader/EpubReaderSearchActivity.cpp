@@ -396,5 +396,11 @@ void EpubReaderSearchActivity::render(RenderLock&&) {
   const char* confirmLabel = terminal ? tr(STR_DONE) : "";
   const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer(terminal ? HalDisplay::FULL_REFRESH : HalDisplay::FAST_REFRESH);
+  // Always a partial refresh, including the terminal NotFound/Error screen. The
+  // throttled progress repaints leave little ghosting to clear, the message is a
+  // transient screen the user immediately dismisses, and dismissing returns to
+  // the reader which full-refreshes its page anyway — so a full-panel flash here
+  // is just visual noise. A match never reaches this render (it finish()es and
+  // the reader paints the result page).
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
