@@ -28,16 +28,12 @@ std::string buildReadFolderDestination(const std::string& srcPath) {
   const size_t dotPos = filename.rfind('.');
   const std::string base = (dotPos != std::string::npos) ? filename.substr(0, dotPos) : filename;
   const std::string ext = (dotPos != std::string::npos) ? filename.substr(dotPos) : "";
-  for (int suffix = 2; suffix < 100; ++suffix) {
+  int suffix = 2;
+  do {
     dstPath = std::string(READ_FOLDER) + "/" + base + " (" + std::to_string(suffix) + ")" + ext;
-    if (!Storage.exists(dstPath.c_str())) {
-      return dstPath;
-    }
-  }
-  // No free "name (N)" slot under the limit: signal failure rather than hand
-  // rename() a path that already exists (which would clobber another book).
-  LOG_ERR("BookMove", "No free destination name in %s for %s", READ_FOLDER, filename.c_str());
-  return "";
+    suffix++;
+  } while (Storage.exists(dstPath.c_str()) && suffix < 100);
+  return dstPath;
 }
 
 bool migrateMovedEpubState(const std::string& oldPath, const std::string& newPath, const std::string& oldCachePath,
