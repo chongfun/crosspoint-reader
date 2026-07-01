@@ -341,7 +341,8 @@ prevents automatic sleep while searching.
 - A cold search can be slow. Reaching an uncached spine requires normal EPUB
   layout and may write images and section data before scanning can continue.
 - Cancellation is handled between page scans. An individual uncached-section
-  layout remains a blocking unit of work.
+  layout remains a blocking unit of work, but an `Indexing` popup is shown while
+  it runs so a cold-cache search does not appear frozen.
 - The cache uses more SD space: roughly the rendered text size plus 8 bytes per
   page.
 - Matches are page-level. Repeating a query skips the rest of the current page,
@@ -414,6 +415,17 @@ heap alone is insufficient to detect fragmentation.
 
 - Make section layout cooperatively cancellable if cold-search latency becomes
   a usability problem.
+- Build a text-only search index for cold sections. Reaching an uncached spine
+  currently runs a full section layout (parse, paginate, render, serialize) —
+  seconds per section — because search reuses the reader's page cache. A search
+  could instead extract only the per-page search text, skipping pagination and
+  glyph/image rendering (the bulk of that cost), making a cold whole-book search
+  dramatically faster. The trade-offs: it needs its own on-disk index (a new
+  format/region) rather than the shared section cache, and a search-triggered
+  build would no longer warm the reader cache as a side effect, so the first read
+  of each section would still pay full layout. Worth it only if cold-search
+  latency on never-read books becomes a priority. Pairs naturally with the
+  contiguous search-text region below, which would be the index's on-disk form.
 - Reduce per-page seeks during a warm scan. The page LUT for a chunk is already
   read once into a reused buffer, and the invariant header state (file size and
   page-LUT offset) is cached per section, so the remaining per-page cost is a
