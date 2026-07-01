@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iterator>
+#include <mutex>
 #include <string>
 
 #include "I18nKeys.h"
@@ -46,6 +47,7 @@ constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER[] = {
     static_cast<uint8_t>(CrossPointSettings::MINIMAL_SLEEP),
     static_cast<uint8_t>(CrossPointSettings::QUICK_RESUME),
     static_cast<uint8_t>(CrossPointSettings::MINIMAL_STATS_SLEEP),
+    static_cast<uint8_t>(CrossPointSettings::DASHBOARD_SLEEP),
 };
 constexpr uint8_t SLEEP_SCREEN_STORAGE_ORDER_COUNT =
     sizeof(SLEEP_SCREEN_STORAGE_ORDER) / sizeof(SLEEP_SCREEN_STORAGE_ORDER[0]);
@@ -378,6 +380,7 @@ uint16_t CrossPointSettings::getReadingIdleTimeThresholdSeconds() const {
 }
 
 bool CrossPointSettings::saveToFile() const {
+  std::lock_guard<std::mutex> lock(_mutex);
   Storage.mkdir("/.crosspoint");
   return JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);
 }
@@ -391,7 +394,11 @@ bool CrossPointSettings::loadFromFile() {
     String json = Storage.readFile(path);
     if (!json.isEmpty()) {
       bool resave = false;
-      bool result = JsonSettingsIO::loadSettings(*this, json.c_str(), &resave);
+      bool result;
+      {
+        std::lock_guard<std::mutex> lock(_mutex);
+        result = JsonSettingsIO::loadSettings(*this, json.c_str(), &resave);
+      }
       if (result && (resave || migrateToCurrentPath)) {
         if (saveToFile()) {
           LOG_DBG("CPS", migrateToCurrentPath ? "Migrated legacy settings.json to crossink-settings.json"
@@ -462,6 +469,7 @@ bool CrossPointSettings::loadFromBinaryFile() {
   if (!Storage.openFileForRead("CPS", SETTINGS_FILE_BIN, inputFile)) {
     return false;
   }
+  std::lock_guard<std::mutex> lock(_mutex);
 
   uint8_t version;
   serialization::readPod(inputFile, version);
@@ -616,6 +624,7 @@ bool CrossPointSettings::verifySleepScreenMigrationContract() {
   constexpr uint8_t minimalSleepStorageValue = 8;
   constexpr uint8_t quickResumeStorageValue = 9;
   constexpr uint8_t minimalStatsStorageValue = 10;
+  constexpr uint8_t dashboardSleepStorageValue = 11;
   for (uint8_t storedValue = 0; storedValue < legacyModeCountBeforeMinimal; storedValue++) {
     if (sleepScreenStorageToMode(storedValue) != storedValue) {
       return false;
@@ -628,6 +637,8 @@ bool CrossPointSettings::verifySleepScreenMigrationContract() {
          sleepScreenModeToStorage(QUICK_RESUME) == quickResumeStorageValue &&
          sleepScreenStorageToMode(minimalStatsStorageValue) == MINIMAL_STATS_SLEEP &&
          sleepScreenModeToStorage(MINIMAL_STATS_SLEEP) == minimalStatsStorageValue &&
+         sleepScreenStorageToMode(dashboardSleepStorageValue) == DASHBOARD_SLEEP &&
+         sleepScreenModeToStorage(DASHBOARD_SLEEP) == dashboardSleepStorageValue &&
          sleepScreenStorageToMode(UINT8_MAX) == DARK;
 }
 #endif

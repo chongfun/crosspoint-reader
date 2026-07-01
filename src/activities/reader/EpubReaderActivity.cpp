@@ -41,6 +41,7 @@
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
+#include "NearbyBookPositionSyncActivity.h"
 #include "ProgressMapper.h"
 #include "QrDisplayActivity.h"
 #include "ReaderUtils.h"
@@ -190,6 +191,15 @@ void applySafeModeReaderSettings() {
 
 std::string stripEmSpacePrefix(const std::string& text) {
   return EpubReaderUtils::hasEmSpacePrefix(text) ? text.substr(3) : text;
+}
+
+bool hasVisibleWordText(const std::string& text) {
+  const char* cursor = text.c_str() + (EpubReaderUtils::hasEmSpacePrefix(text) ? 3 : 0);
+  while (*cursor) {
+    if (*cursor != ' ' && *cursor != '\t' && *cursor != '\r' && *cursor != '\n') return true;
+    cursor++;
+  }
+  return false;
 }
 
 uint8_t largestBlockPercent(const MemoryBudget::HeapSnapshot& heap) {
@@ -653,7 +663,7 @@ ReaderViewportLayout computeReaderViewportLayout(GfxRenderer& renderer, const bo
   const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
   if (topStatusBarReservedHeight > 0) {
     layout.marginTop += std::max(static_cast<int>(SETTINGS.screenMargin),
-                                 topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
+                                 topStatusBarReservedHeight + ReaderUtils::TOP_CLOCK_TEXT_PADDING);
   } else {
     layout.marginTop += SETTINGS.screenMargin;
   }
@@ -1593,6 +1603,7 @@ void EpubReaderActivity::onEnter() {
   captureGlobalReaderSettings();
   epub->setupCacheDir();
   loadBookReaderSettings();
+  sdFontSystem.ensureLoaded(renderer);
 
   // Configure screen orientation based on settings
   // NOTE: This affects layout math and must be applied before any render calls.
@@ -1665,7 +1676,7 @@ void EpubReaderActivity::onEnter() {
   APP_STATE.openEpubPath = epub->getPath();
   APP_STATE.saveToFile();
   RECENT_BOOKS.addOrUpdateBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
-  SleepCoverAssets::prepareEpub(*epub);
+  SleepCoverAssets::prepareEpub(*epub, &renderer);
 
   // Trigger first update
   requestUpdate();
@@ -2598,6 +2609,49 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       }
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::NEARBY_POSITION_SYNC: {
+      const int currentPage = section ? section->currentPage : nextPageNumber;
+      const int totalPages = section ? section->pageCount : std::max(1, cachedChapterTotalPageCount);
+      std::optional<uint16_t> paragraphIndex;
+      if (section && currentPage >= 0 && currentPage < section->pageCount) {
+        if (const auto pIdx = section->getParagraphIndexForPage(static_cast<uint16_t>(currentPage))) {
+          paragraphIndex = *pIdx;
+        }
+      }
+
+      CrossPointPosition localPos = {currentSpineIndex, currentPage, totalPages};
+      if (paragraphIndex.has_value()) {
+        localPos.paragraphIndex = *paragraphIndex;
+        localPos.hasParagraphIndex = true;
+      }
+      KOReaderPosition localKoPos = ProgressMapper::toKOReader(epub, localPos);
+      const int tocIdx = epub->getTocIndexForSpineIndex(currentSpineIndex);
+      std::string localChapterName = (tocIdx >= 0) ? epub->getTocItem(tocIdx).title : "";
+      const std::string savedEpubPath = epub->getPath();
+
+      if (!saveProgress(currentSpineIndex, currentPage, totalPages)) {
+        LOG_ERR("NBPS", "Aborting nearby position sync because current progress could not be saved");
+        pendingSyncSaveError = true;
+        requestUpdate();
+        return;
+      }
+
+      LOG_DBG("NBPS", "Releasing section for nearby position sync (heap before: %u)", (unsigned)ESP.getFreeHeap());
+      {
+        RenderLock lock(*this);
+        if (section) {
+          nextPageNumber = section->currentPage;
+        }
+        section.reset();
+      }
+      LOG_DBG("NBPS", "Section released for nearby position sync (heap after: %u)", (unsigned)ESP.getFreeHeap());
+
+      pauseReadingPaceTimer("nearby_position_sync");
+      activityManager.replaceActivity(std::make_unique<NearbyBookPositionSyncActivity>(
+          renderer, mappedInput, epub, savedEpubPath, currentSpineIndex, currentPage, totalPages, std::move(localKoPos),
+          std::move(localChapterName), paragraphIndex));
+      break;
+    }
     case EpubReaderMenuActivity::MenuAction::BOOKMARK_TOGGLE: {
       if (activeFootnotePreview || !section || section->pageCount == 0) break;
       const uint16_t spine = static_cast<uint16_t>(currentSpineIndex);
@@ -2727,8 +2781,8 @@ void EpubReaderActivity::openAutoPageTurnIntervalPicker(const bool ignoreInitial
   startActivityForResult(
       std::make_unique<IntervalSelectionActivity>(
           renderer, mappedInput, "EpubReaderAutoPageTurnInterval", StrId::STR_AUTO_TURN_INTERVAL_SECONDS,
-          StrId::STR_AUTO_TURN_STEP_HINT, getAutoPageTurnIntervalSeconds(), MIN_AUTO_PAGE_TURN_INTERVAL_S,
-          MAX_AUTO_PAGE_TURN_INTERVAL_S, 1, 5, StrId::STR_NONE_OPT, /*readerActivity=*/true,
+          getAutoPageTurnIntervalSeconds(), MIN_AUTO_PAGE_TURN_INTERVAL_S, MAX_AUTO_PAGE_TURN_INTERVAL_S, 1, 5,
+          StrId::STR_NONE_OPT, /*readerActivity=*/true,
           /*allowPowerAsConfirm=*/true, ignoreInitialConfirmRelease),
       [this](const ActivityResult& result) {
         if (!result.isCancelled) {
@@ -2766,7 +2820,24 @@ void EpubReaderActivity::startClipSelection() {
     const int lineHeight = renderer.getLineHeight(readerFontId);
     startPage = section->currentPage;
     const int pagesToLoad = std::min(3, section->pageCount - startPage);
-    words.reserve(static_cast<size_t>(std::max(0, pagesToLoad)) * 80);
+    std::array<uint16_t, 3> pageWordCounts{};
+    static constexpr size_t CLIP_SELECTION_WORDS_PER_PAGE = 80;
+    static constexpr size_t MAX_CLIP_SELECTION_WORDS = 240;
+    static constexpr uint32_t CLIP_SELECTION_WORD_RESERVE_HEADROOM = 16U * 1024U;
+    const size_t maxSelectableWords =
+        std::min(MAX_CLIP_SELECTION_WORDS, static_cast<size_t>(pagesToLoad) * CLIP_SELECTION_WORDS_PER_PAGE);
+    const uint32_t wordReserveBytes = static_cast<uint32_t>(maxSelectableWords * sizeof(WordRef));
+    const auto heapBeforeWords = MemoryBudget::snapshot();
+    if (heapBeforeWords.maxAllocHeap < wordReserveBytes + CLIP_SELECTION_WORD_RESERVE_HEADROOM) {
+      LOG_ERR("CLIP", "Low heap for clipping selection (%u free, %u max alloc, need block %u); skipping",
+              heapBeforeWords.freeHeap, heapBeforeWords.maxAllocHeap,
+              wordReserveBytes + CLIP_SELECTION_WORD_RESERVE_HEADROOM);
+      section->currentPage = startPage;
+      requestUpdate();
+      return;
+    }
+    words.reserve(maxSelectableWords);
+    bool wordLimitLogged = false;
 
     for (int pageIdx = 0; pageIdx < pagesToLoad; ++pageIdx) {
       section->currentPage = startPage + pageIdx;
@@ -2791,8 +2862,15 @@ void EpubReaderActivity::startClipSelection() {
           renderer.ensureSdCardFontReady(readerFontId, wordList, /*includeHyphen=*/false, styleMask);
         }
         for (size_t i = 0; i < count; ++i) {
-          const std::string visibleWord = stripEmSpacePrefix(wordList[i]);
-          if (visibleWord.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+          if (!hasVisibleWordText(wordList[i])) continue;
+          if (words.size() >= maxSelectableWords) {
+            if (!wordLimitLogged) {
+              LOG_ERR("CLIP", "Selectable word cap hit (%u words); clipping range truncated",
+                      static_cast<unsigned>(maxSelectableWords));
+              wordLimitLogged = true;
+            }
+            break;
+          }
 
           const auto textStyle = static_cast<EpdFontFamily::Style>(styles[i] & ~EpdFontFamily::UNDERLINE);
           int wordWidth = renderer.getTextAdvanceX(readerFontId, wordList[i].c_str(), textStyle);
@@ -2807,9 +2885,11 @@ void EpubReaderActivity::startClipSelection() {
           word.w = wordWidth;
           word.h = lineHeight;
           word.pageIdx = pageIdx;
+          word.pageWordIndex = pageWordCounts[pageIdx]++;
           word.text = wordList[i];
           word.style = textStyle;
           word.endsWithInsertedHyphen = block.wordEndsWithInsertedHyphen(i);
+          word.lineIsRtl = block.getBlockStyle().isRtl;
           words.push_back(std::move(word));
         }
       }
@@ -3003,10 +3083,31 @@ void EpubReaderActivity::executeReaderQuickAction(CrossPointSettings::LONG_PRESS
     case CrossPointSettings::LONG_MENU_CREATE_CLIPPING:
       startClipSelection();
       break;
+    case CrossPointSettings::LONG_MENU_QUICK_RETURN:
+      // Quick Return from the reading view is a no-op (we are already reading).
+      // When triggered from a settings/options screen it is handled globally in
+      // the main loop via ActivityManager::quickReturn().
+      break;
     case CrossPointSettings::LONG_MENU_OFF:
     default:
       break;
   }
+}
+
+void EpubReaderActivity::onReveal() {
+  // Reached via ActivityManager::quickReturn(): the reader options/settings screens
+  // stacked above us were discarded without running their result handlers, so re-apply
+  // orientation and force a re-layout in case a font/layout setting changed while away.
+  applyOrientation(SETTINGS.orientation);
+  sdFontSystem.ensureLoaded(renderer);
+  {
+    RenderLock lock(*this);
+    if (section) {
+      cacheCurrentSectionPosition();
+    }
+    section.reset();  // Force re-layout with the current reader settings
+  }
+  requestUpdate();
 }
 
 bool EpubReaderActivity::quickActionUsesConfirmRelease(const CrossPointSettings::LONG_PRESS_MENU_ACTION action) const {
@@ -4258,6 +4359,21 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int fo
     // HALF ghost-cleanup path, which drives every pixel to its target
     // regardless of residue.
     pagesUntilFullRefresh = 1;
+  } else if (needsAnyGrayscale) {
+    if (pagesUntilFullRefresh <= 1) {
+      // Cleanup turns still need the stronger HALF pass, but X3 grayscale
+      // overlays settle better if the OEM precondition step runs before the
+      // gray planes are written.
+      renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+      renderer.preconditionGrayscale();
+      pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
+    } else {
+      // Use the grayscale-aware base waveform so the first visible pass is
+      // closer to the final anti-aliased result instead of flashing darker
+      // text first and softening after the grayscale overlay.
+      renderer.displayGrayscaleBase(HalDisplay::FAST_REFRESH);
+      pagesUntilFullRefresh--;
+    }
   } else {
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
   }

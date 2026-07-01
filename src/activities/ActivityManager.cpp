@@ -24,12 +24,13 @@
 #include "util/FullScreenMessageActivity.h"
 
 void ActivityManager::begin() {
-  xTaskCreate(&renderTaskTrampoline, "ActivityManagerRender",
-              16384,  // Stack size — increased from 8192; createSectionFile() puts ChapterHtmlSlimParser (~700 bytes)
-                      // on stack during silentIndexNextChapterIfNeeded
-              this,   // Parameters
-              1,      // Priority
-              &renderTaskHandle  // Task handle
+  xTaskCreatePinnedToCore(&renderTaskTrampoline, "ActivityManagerRender",
+                          16384,  // Stack size - createSectionFile() puts ChapterHtmlSlimParser on stack during
+                                  // silentIndexNextChapterIfNeeded
+                          this,   // Parameters
+                          1,      // Priority
+                          &renderTaskHandle,  // Task handle
+                          0                   // Pin to core 0 (PRO_CPU)
   );
   assert(renderTaskHandle != nullptr && "Failed to create render task");
 }
@@ -154,8 +155,7 @@ void ActivityManager::loop() {
     pushActivity(std::make_unique<AlertActivity>(renderer, mappedInput));
   }
 
-  if (requestedUpdate) {
-    requestedUpdate = false;
+  if (requestedUpdate.exchange(false)) {
     // Using direct notification to signal the render task to update
     // Increment counter so multiple rapid calls won't be lost
     if (renderTaskHandle) {
@@ -299,6 +299,57 @@ bool ActivityManager::isReaderActivity() const {
 
   return std::any_of(stackActivities.begin(), stackActivities.end(),
                      [](const auto& activity) { return activity && activity->isReaderActivity(); });
+}
+
+void ActivityManager::quickReturn() {
+  if (!currentActivity) {
+    return;
+  }
+
+  // If a live reader is parked beneath the current screen (reader options/settings
+  // opened from a book), unwind everything stacked above it and reveal the reader.
+  const auto readerIt = std::find_if(stackActivities.begin(), stackActivities.end(),
+                                     [](const auto& activity) { return activity && activity->isReaderActivity(); });
+  if (readerIt != stackActivities.end()) {
+    const size_t readerIdx = static_cast<size_t>(std::distance(stackActivities.begin(), readerIt));
+    {
+      RenderLock lock;
+      // Discard the current screen and every screen stacked above the reader.
+      exitActivity(lock);
+      while (stackActivities.size() > readerIdx + 1) {
+        stackActivities.back()->onExit();
+        stackActivities.pop_back();
+      }
+      currentActivity = std::move(stackActivities.back());
+      stackActivities.pop_back();
+      // The skipped screens never delivered their result; drop the stale handler so it
+      // cannot fire against the next pushed activity.
+      currentActivity->resultHandler = nullptr;
+      LOG_DBG("ACT", "Quick Return revealed reader, stack size = %zu", stackActivities.size());
+    }
+    // onReveal() may take its own RenderLock, so call it after releasing ours.
+    currentActivity->onReveal();
+    requestUpdate(/*immediate=*/true);
+    return;
+  }
+
+  // No reader beneath us: no-op if we are already reading or already home, otherwise
+  // drop the home-rooted settings tree and return to the Home screen.
+  if (currentActivity->isReaderActivity() || currentActivity->name == "Home") {
+    return;
+  }
+  goHome();
+}
+
+bool ActivityManager::quickReturnHasTarget() const {
+  if (!currentActivity) {
+    return false;
+  }
+  const bool readerOnStack = std::any_of(stackActivities.begin(), stackActivities.end(),
+                                         [](const auto& activity) { return activity && activity->isReaderActivity(); });
+  // A reader beneath us means we can return to it; otherwise quickReturn() goes Home,
+  // which is only meaningful when we are not already in the reading view or on Home.
+  return readerOnStack || (!currentActivity->isReaderActivity() && currentActivity->name != "Home");
 }
 
 bool ActivityManager::canSnapshotForSleepOverlay() const {

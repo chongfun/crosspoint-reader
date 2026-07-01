@@ -24,6 +24,7 @@
 using namespace epub;
 
 namespace {
+
 constexpr uint16_t INITIAL_SECTION_PAGE_LUT_ENTRIES = 1024;
 
 // The header ends with a fixed trailer written last and patched after layout

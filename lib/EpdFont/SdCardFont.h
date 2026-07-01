@@ -54,6 +54,7 @@ class SdCardFont {
   // Look up advanceX for a codepoint from the advance table.
   // Returns the 12.4 fixed-point advance, or 0 if not found.
   uint16_t getAdvance(uint32_t codepoint, uint8_t style) const;
+  bool readAdvance(uint32_t codepoint, uint8_t style, uint16_t* outAdvance) const;
 
   // Returns true if advance table is populated for at least one style.
   bool hasAdvanceTable() const;
@@ -109,6 +110,7 @@ class SdCardFont {
   void logStats(const char* label = "SDCF");
   void resetStats();
   const Stats& getStats() const { return stats_; }
+  bool lastPrewarmFailed() const { return lastPrewarmFailed_; }
 
   // Content hash of the file header + style TOC entries (computed during load).
   // Used to generate deterministic font IDs for section cache invalidation.
@@ -243,6 +245,7 @@ class SdCardFont {
   Stats stats_;
   uint32_t contentHash_ = 0;
   bool loaded_ = false;
+  bool lastPrewarmFailed_ = false;
 
   // Per-style helpers
   void freeStyleMiniData(PerStyle& s);
@@ -255,6 +258,7 @@ class SdCardFont {
   void applyGlyphMissCallback(uint8_t styleIdx);
   int32_t findGlobalGlyphIndex(const PerStyle& s, uint32_t codepoint) const;
   int fetchAdvancesForCodepoints(uint32_t* codepoints, uint32_t cpCount, uint8_t styleMask);
+  int failPrewarm(int missed);
   template <typename Iter>
   int buildAdvanceTableRange(Iter begin, Iter end, bool includeSpace, bool includeHyphen, uint8_t styleMask);
   int prewarmStyle(uint8_t styleIdx, const uint32_t* codepoints, uint32_t cpCount, bool metadataOnly);

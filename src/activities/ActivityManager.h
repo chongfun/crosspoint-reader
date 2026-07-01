@@ -4,6 +4,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <cassert>
 #include <memory>
 #include <string>
@@ -72,7 +73,7 @@ class ActivityManager {
 
   // Whether to trigger a render after the current loop()
   // This variable must only be set by the main loop, to avoid race conditions
-  bool requestedUpdate = false;
+  std::atomic<bool> requestedUpdate{false};
 
  public:
   explicit ActivityManager(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -111,6 +112,15 @@ class ActivityManager {
   // Remove the currentActivity, returning the last one on stack
   // Note: if popActivity() on last activity on the stack, we will goHome()
   void popActivity();
+
+  // Quick Return: jump out of nested screens in one step. If a live reader is parked
+  // beneath the current screen (settings/options opened from a book), unwind back to it
+  // and call onReveal(); otherwise return Home. No-op when already reading or at Home.
+  void quickReturn();
+
+  // True when quickReturn() would actually navigate. Used to gate the long-press
+  // Back/Menu interceptor so it does not fire from the reading view or the Home screen.
+  bool quickReturnHasTarget() const;
 
   bool preventAutoSleep() const;
   bool isReaderActivity() const;

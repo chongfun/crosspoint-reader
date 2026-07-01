@@ -1,10 +1,28 @@
 # Changelog
-
 ## [Unreleased]
 
 ### Added
 
 - In-book search: find a word or phrase within the current EPUB and jump to a match, with the matched words highlighted on the page. Matching respects word boundaries while still finding words broken by hyphenation across a line or page.
+- `Quick Return` shortcut for short/long Power, long-press Menu, and long-press Back actions that jumps straight back to the book you were reading (or the Home screen) from deep inside nested settings, instead of pressing Back repeatedly.
+- Dashboard UI theme for the Home screen, combining the current book cover, reading stats, streak, and reader type in one layout.
+- Nearby Position Sync for sending or applying the current EPUB position between two CrossInk devices over ESP-NOW.
+- Web EPUB optimizer now writes CrossInk location metadata into optimized EPUBs so future reader builds can use stable word-based positions across layout changes.
+- EPUB reader now uses CrossInk location metadata from optimized EPUBs for word-weighted progress and percent-based jumps.
+
+### Changed
+- Settings with three or more choices, including Language, now open an inline popup menu instead of cycling through every option one press at a time.
+- EPUB parsing, large-book metadata indexing, and generated cover conversion now use more arena-backed scratch buffers to reduce heap fragmentation during heavy book processing.
+
+### Fixed
+- Chinese and other large SD-card font EPUBs no longer overlap characters after font or line-spacing changes exhaust the small glyph-advance cache.
+- EPUB clipping selection now falls back to a built-in UI font if an SD-card reader font cannot be prewarmed, avoiding replacement-glyph pages and low-memory crashes while leaving the reader font unchanged.
+- EPUB cover and thumbnail generation now releases SD-card reader font caches before JPEG/PNG decoding when heap is tight, reducing cover failures with custom fonts selected.
+- EPUB grayscale page turns on X3 now use the grayscale-aware display base, reducing the moment where new text appears too dark before the anti-aliased overlay finishes.
+- EPUB chapters with many inline anchors or footnote links are less likely to fail with a memory error when first opened.
+- EPUB clipping selection now follows right-to-left line order when selecting Hebrew and other RTL text.
+- Lyra Carousel no longer shows a blank carousel after returning from WiFi-related File Transfer screens and moving between the menu row and book row.
+- Stable page numbers now work with EPUBs optimized by v1.3.4 as well as newer optimized EPUBs.
 
 ## [v1.3.4] - 2026-06-24
 

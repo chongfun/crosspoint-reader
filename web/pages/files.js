@@ -2086,7 +2086,7 @@ function buildCrossInkLocationManifest(opfContent, opfPath, xhtmlFiles) {
   }
 
   return {
-    format: 'crossink-locations',
+    format: 'x-locations',
     version: 1,
     generator: 'crossink-web-uploader',
     unit: 'word',

@@ -267,6 +267,20 @@ void TxtReaderActivity::toggleDarkMode() {
   requestUpdate();
 }
 
+void TxtReaderActivity::onReveal() {
+  // Reached via ActivityManager::quickReturn(): the settings screens stacked above us
+  // were discarded without reconciling, so re-apply orientation and force a re-layout
+  // in case a font/margin/orientation setting changed. currentPage is preserved.
+  {
+    RenderLock lock(*this);
+    ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
+    pageOffsets.clear();
+    currentPageLines.clear();
+    initialized = false;
+  }
+  requestUpdate();
+}
+
 bool TxtReaderActivity::consumeLongPowerButtonRelease() {
   if (!longPowerButtonHandled) {
     return false;
@@ -388,7 +402,7 @@ void TxtReaderActivity::initializeReader() {
   const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
   if (topStatusBarReservedHeight > 0) {
     cachedOrientedMarginTop += std::max(static_cast<int>(cachedScreenMargin),
-                                        topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
+                                        topStatusBarReservedHeight + ReaderUtils::TOP_CLOCK_TEXT_PADDING);
   } else {
     cachedOrientedMarginTop += cachedScreenMargin;
   }
@@ -807,7 +821,7 @@ bool TxtReaderActivity::drawCurrentPageToBuffer(const std::string& filePath, Gfx
   const int topStatusBarReservedHeight = ReaderUtils::getTopClockStatusBarReservedHeight();
   if (topStatusBarReservedHeight > 0) {
     marginTop +=
-        std::max(static_cast<int>(screenMargin), topStatusBarReservedHeight + ReaderUtils::STATUS_BAR_TEXT_PADDING);
+        std::max(static_cast<int>(screenMargin), topStatusBarReservedHeight + ReaderUtils::TOP_CLOCK_TEXT_PADDING);
   } else {
     marginTop += screenMargin;
   }

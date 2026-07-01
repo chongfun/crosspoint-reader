@@ -10,7 +10,8 @@
 namespace epub {
 
 constexpr uint32_t SECTION_CACHE_MAGIC = 0x535843FF;  // bytes: 0xFF, "CXS"
-// v42: page LUT entries include offsets to compact text records used by search.
+// v42: page LUT entries include offsets to compact text records used by search,
+//      and corrected SD-card font advance measurement in CJK-heavy layouts.
 constexpr uint8_t SECTION_FILE_VERSION = 42;
 
 constexpr uint32_t HEADER_SIZE = sizeof(SECTION_CACHE_MAGIC) + sizeof(uint8_t) + sizeof(int) + sizeof(float) +
