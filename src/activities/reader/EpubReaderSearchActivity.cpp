@@ -168,10 +168,17 @@ bool EpubReaderSearchActivity::ensureSectionLoaded() {
   }
 
   LOG_DBG("EPS", "Building section %d for search", currentSpineIndex);
+  // Searching a book whose section caches were never built (e.g. a never-read
+  // book, or after a cache clear) lays out each missing section synchronously —
+  // seconds per section, during which loop() cannot repaint. Pass the same
+  // indexing popup the reader uses so a cold-cache search shows "Indexing"
+  // instead of appearing frozen. The parser only fires this for slow (large)
+  // sections, so fast ones are unaffected.
+  const auto popupFn = [this]() { GUI.drawPopup(renderer, tr(STR_INDEXING)); };
   if (!section.createSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                  SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                  viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
-                                 SETTINGS.imageRendering, SETTINGS.focusReadingEnabled)) {
+                                 SETTINGS.imageRendering, SETTINGS.focusReadingEnabled, popupFn)) {
     LOG_ERR("EPS", "Failed to build section %d for search", currentSpineIndex);
     setFailure(SearchState::Error);
     return false;
