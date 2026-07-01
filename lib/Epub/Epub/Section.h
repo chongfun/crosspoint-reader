@@ -41,6 +41,17 @@ class Section {
   uint32_t searchFileSize = 0;
   uint32_t searchLutOffset = 0;
 
+  // Reused scan buffers, allocated once (nothrow) and grown as needed so repeated
+  // chunked scans do not churn the heap and an allocation failure is a
+  // recoverable search error rather than an abort. Not freed by closeSearchState();
+  // they persist for the Section's lifetime and are reused across spines. lutBuf
+  // holds one chunk's page-LUT entries; textBuf batches text-record reads to
+  // minimize slow SPI transactions over the small stack array previously used.
+  std::unique_ptr<uint8_t[]> searchLutBuf;
+  size_t searchLutBufCapacity = 0;
+  std::unique_ptr<uint8_t[]> searchTextBuf;
+  size_t searchTextBufCapacity = 0;
+
   void writeSectionFileHeader(int fontId, float lineCompression, bool extraParagraphSpacing, uint8_t paragraphAlignment,
                               uint16_t viewportWidth, uint16_t viewportHeight, bool hyphenationEnabled,
                               bool embeddedStyle, uint8_t imageRendering, bool focusReadingEnabled);

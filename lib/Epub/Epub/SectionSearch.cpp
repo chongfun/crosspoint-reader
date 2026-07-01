@@ -42,13 +42,19 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     return {ScanStatus::CorruptCache, -1};
   }
 
-  // We allocate a buffer for the chunk to reduce seek overhead.
+  // Batch-read the chunk's LUT entries into a reused buffer, allocated (or grown)
+  // once with nothrow ownership so repeated chunked scans do not churn the heap
+  // and an allocation failure is a recoverable search error rather than an abort.
   const size_t lutBytes = static_cast<size_t>(count) * PAGE_LUT_ENTRY_SIZE;
-  auto lutBuf = std::make_unique<uint8_t[]>(lutBytes);
-  if (!lutBuf) {
-    LOG_ERR("SCT", "Search failed: OOM for page LUT buffer (%u bytes)", static_cast<unsigned>(lutBytes));
-    closeSearchState();
-    return {ScanStatus::IoError, -1};
+  if (searchLutBufCapacity < lutBytes) {
+    searchLutBuf = makeUniqueNoThrow<uint8_t[]>(lutBytes);
+    if (!searchLutBuf) {
+      searchLutBufCapacity = 0;
+      LOG_ERR("SCT", "Search failed: OOM for page LUT buffer (%u bytes)", static_cast<unsigned>(lutBytes));
+      closeSearchState();
+      return {ScanStatus::IoError, -1};
+    }
+    searchLutBufCapacity = lutBytes;
   }
 
   if (!file.seek(static_cast<size_t>(entryOffset))) {
@@ -56,16 +62,29 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     closeSearchState();
     return {ScanStatus::IoError, -1};
   }
-  if (file.read(lutBuf.get(), lutBytes) != lutBytes) {
+  if (file.read(searchLutBuf.get(), lutBytes) != lutBytes) {
     LOG_ERR("SCT", "Search failed: could not read page LUT entries");
     closeSearchState();
     return {ScanStatus::IoError, -1};
   }
 
-  std::array<uint8_t, 64> buffer;
+  // Allocate a larger reused heap buffer to batch text reads, drastically
+  // reducing slow SPI transactions over the small 64-byte stack array previously
+  // used. Allocated once (nothrow) and reused across chunks and spines.
+  constexpr size_t TEXT_BUF_SIZE = 2048;
+  if (searchTextBufCapacity < TEXT_BUF_SIZE) {
+    searchTextBuf = makeUniqueNoThrow<uint8_t[]>(TEXT_BUF_SIZE);
+    if (!searchTextBuf) {
+      searchTextBufCapacity = 0;
+      LOG_ERR("SCT", "Search failed: OOM for text buffer");
+      closeSearchState();
+      return {ScanStatus::IoError, -1};
+    }
+    searchTextBufCapacity = TEXT_BUF_SIZE;
+  }
   for (uint16_t i = 0; i < count; i++) {
     uint32_t searchTextOffset = 0;
-    memcpy(&searchTextOffset, lutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
+    memcpy(&searchTextOffset, searchLutBuf.get() + i * PAGE_LUT_ENTRY_SIZE + sizeof(uint32_t), sizeof(uint32_t));
     if (searchTextOffset < HEADER_SIZE || searchTextOffset > lutOffset ||
         lutOffset - searchTextOffset < sizeof(uint32_t)) {
       LOG_ERR("SCT", "Search failed: invalid text record offset");
@@ -105,8 +124,8 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
 
     uint32_t pageBytePos = 0;
     while (remaining > 0) {
-      const size_t chunkSize = std::min<size_t>(buffer.size(), remaining);
-      if (file.read(buffer.data(), chunkSize) != chunkSize) {
+      const size_t chunkSize = std::min<size_t>(searchTextBufCapacity, remaining);
+      if (file.read(searchTextBuf.get(), chunkSize) != chunkSize) {
         LOG_ERR("SCT", "Search failed: truncated text record");
         closeSearchState();
         return {ScanStatus::IoError, -1};
@@ -114,7 +133,7 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
       remaining -= chunkSize;
 
       for (size_t j = 0; j < chunkSize; ++j) {
-        const int signal = matcher.feed(buffer[j]);
+        const int signal = matcher.feed(searchTextBuf[j]);
         if (signal > 0) {
           const int endByte = static_cast<int>(pageBytePos);
           const int startByte = (pageBytePos + 1 >= static_cast<uint32_t>(signal))
