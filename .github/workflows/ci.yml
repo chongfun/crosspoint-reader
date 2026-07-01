@@ -12,8 +12,9 @@ jobs:
   clang-format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          persist-credentials: false
           submodules: recursive
 
       - uses: actions/setup-python@v6
@@ -36,8 +37,9 @@ jobs:
   cppcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          persist-credentials: false
           submodules: recursive
 
       - uses: actions/setup-python@v6
@@ -67,8 +69,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          persist-credentials: false
           submodules: recursive
 
       - uses: actions/setup-python@v6
@@ -116,6 +119,26 @@ jobs:
             .pio/build/tiny/firmware-tiny.bin
           if-no-files-found: error
 
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Verify CMake
+        run: cmake --version
+
+      - name: Configure test suite
+        run: cmake -S test -B test/build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build test suite
+        run: cmake --build test/build -j"$(nproc)"
+
+      - name: Run test suite
+        run: ctest --test-dir test/build --output-on-failure
+
   # This job is used as the PR required actions check, allows for changes to other steps in the future without breaking
   # PR requirements.
   test-status:
@@ -124,6 +147,7 @@ jobs:
       - build
       - clang-format
       - cppcheck
+      - unit-tests
     if: always()
     runs-on: ubuntu-latest
     steps:

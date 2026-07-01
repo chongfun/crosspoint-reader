@@ -5,13 +5,17 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <array>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "BookReadingStats.h"
 #include "BookmarkStore.h"
 #include "EpubReaderMenuActivity.h"
 #include "GlobalReadingStats.h"
+#include "SearchHighlighter.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -104,12 +108,10 @@ class EpubReaderActivity final : public Activity {
   bool pendingTiltPageTurnFeedback = false;
   bool tiltPageTurnFeedbackEnabled = false;
   unsigned long tiltPageTurnFeedbackShowTime = 0UL;
-  bool pendingRenderModeToast = false;
+  // Once-per-book latches deciding whether the auto render-mode / safe-mode
+  // toast should appear. The visible toast itself is the shared `toast` slot.
   bool renderModeToastShown = false;
-  bool pendingSafeModeToast = false;
   bool safeModeToastShown = false;
-  uint8_t renderModeToastMode = 0;
-  unsigned long renderModeToastShowTime = 0UL;
   int completionTriggerSpineIndex = -1;
   float completionTriggerSpineProgress = 1.0f;
   bool completionPromptQueued = false;
@@ -118,6 +120,24 @@ class EpubReaderActivity final : public Activity {
   bool completionTriggerCrossed = false;
   bool lastAtOrPastCompletionTrigger = false;
 
+  // Single transient on-screen toast slot, shared by the render-mode, safe-mode,
+  // and search messages. `message` points at tr() storage (stable) or is null
+  // when hidden; auto-dismissed `durationMs` after `showTime` in loop().
+  struct Toast {
+    const char* message = nullptr;
+    unsigned long showTime = 0UL;
+    unsigned long durationMs = 0UL;
+  };
+  Toast toast;
+  std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> lastSearchQuery{};
+  int lastSearchResultSpine = -1;
+  int lastSearchResultPage = -1;
+  // Byte span of the active search match within (lastSearchResultSpine,
+  // lastSearchResultPage)'s search-text record, handed up by the search scan so
+  // the highlighter can paint it without re-matching. -1 when not on a result page.
+  int lastSearchMatchStartByte = -1;
+  int lastSearchMatchEndByte = -1;
+  SearchHighlighter searchHighlighter;
   // Tracks whether this book is currently removed from Recent Books by the
   // removeReadBooksFromRecents feature (set at End-of-Book, cleared if paged back in).
   bool recentsEntryRemoved = false;
@@ -191,6 +211,10 @@ class EpubReaderActivity final : public Activity {
   bool executeLongPowerButtonAction();
   void handleClippingJump(const ClippingJumpResult& clipping);
   void onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction action);
+  void launchSearchInput();
+  void launchBookSearch(const std::string& query);
+  // Show `message` in the shared transient toast slot for `durationMs`.
+  void showToast(const char* message, unsigned long durationMs);
   void applyOrientation(uint8_t orientation);
   void pageTurn(bool isForwardTurn, const char* source = "unknown");
   float getCurrentBookProgressPercent() const;

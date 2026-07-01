@@ -229,19 +229,20 @@ Binary layout:
 
 ## `section.bin`
 
-### Version 41
+### Version 42
 
 Each file in `sections/*.bin` stores one laid-out spine section. The header is
 also the cache-busting key: if any layout-affecting setting differs from the
 current reader settings, the section is discarded and rebuilt.
 
-Version 41 includes:
+Version 42 includes:
 
 - cache-busting fields for font, line compression, extra paragraph spacing,
   forced paragraph indents, paragraph alignment, viewport size, hyphenation,
   embedded CSS, image rendering mode, Bionic Reading, Guide Dots, and EPUB
   render mode
-- page offset LUT
+- paired page/search-text offset LUT
+- compact per-page text records used by bounded-memory in-book search
 - anchor-to-page map for fragment and footnote navigation
 - paragraph and list-item LUTs used by KOReader sync page refinement
 - optional per-word Bionic Reading split metadata
@@ -252,6 +253,9 @@ Version 41 includes:
 - per-page footnote entries
 - per-page publisher page markers
 
+See [In-Book Search Architecture](./search-architecture.md) for the
+memory and SD-space trade-offs behind the search records.
+
 ImHex pattern:
 
 ```c++
@@ -259,7 +263,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 41
+#define EXPECTED_VERSION 42
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 96
@@ -426,6 +430,17 @@ struct Page {
     PublisherPageMarker publisherPageMarkers[publisherPageMarkerCount];
 };
 
+struct PageRecord {
+    Page page [[inline]];
+    u32 searchTextLength;
+    char searchText[searchTextLength] [[comment("Rendered words joined by ASCII spaces")]];
+};
+
+struct PageLutEntry {
+    u32 pageOffset [[comment("Serialized Page offset")]];
+    u32 searchTextOffset [[comment("searchTextLength field offset")]];
+};
+
 struct AnchorEntry {
     String anchor;
     u16 page;
@@ -467,14 +482,14 @@ struct SectionBin {
     u32 paragraphLutOffset;
     u32 listItemLutOffset;
 
-    Page pages[pageCount];
+    PageRecord pages[pageCount];
 
     u32 currentOffset = $;
     if (currentOffset != pageLutOffset) {
         std::warning(std::format("Page LUT offset mismatch: expected 0x{:X}, got 0x{:X}", pageLutOffset, currentOffset));
     }
 
-    u32 pageLut[pageCount] [[comment("Page data offsets")]];
+    PageLutEntry pageLut[pageCount] [[comment("Page and search-text offsets")]];
 
     if (anchorMapOffset != 0) {
         AnchorMap anchorMap @ anchorMapOffset;

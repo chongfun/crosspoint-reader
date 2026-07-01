@@ -419,6 +419,8 @@ bool Page::serialize(FsFile& file) const {
   return true;
 }
 
+// Page::serializeSearchText() is defined in PageSearch.cpp.
+
 std::unique_ptr<Page> Page::deserialize(FsFile& file) {
   auto* rawPage = new (std::nothrow) Page();
   if (!rawPage) {

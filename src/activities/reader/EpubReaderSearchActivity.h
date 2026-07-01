@@ -1,0 +1,125 @@
+#pragma once
+
+#include <Epub.h>
+#include <Epub/SearchMatcher.h>
+#include <Epub/Section.h>
+
+#include <array>
+#include <cstdint>
+#include <memory>
+
+#include "activities/Activity.h"
+
+class EpubReaderSearchActivity final : public Activity {
+ public:
+  // The book-wide scan route, owned as one concept. The scan starts at
+  // (startSpineIndex, startPage), runs forward to the end of the book, wraps
+  // once, and stops before re-examining stopPage (the page the search was
+  // initiated from). A fresh search may scan stopPage once more only to finish
+  // a partial match that began on its preceding page. make() encodes the one
+  // invariant tying the route together:
+  // a repeated "find next" begins one page past stopPage so it cannot re-return
+  // the originating page, while a fresh search begins exactly at it.
+  struct SearchRoute {
+    int startSpineIndex;
+    int startPage;
+    int stopPage;
+    int sourcePageCount;
+
+    static SearchRoute make(int spineIndex, int initiatedFromPage, bool findNext, int sourcePageCount = 0) {
+      return SearchRoute{spineIndex, initiatedFromPage + (findNext ? 1 : 0), initiatedFromPage, sourcePageCount};
+    }
+
+    // The reader state a search is launched from. plan() turns this into a route
+    // without touching reader internals, so the start/stop and fresh-vs-find-next
+    // policy is one pure, host-testable function instead of inline activity code.
+    struct Origin {
+      int spineIndex;            // the spine the reader is on (may be out of range)
+      int page;                  // the page the reader is on
+      int spineItemsCount;       // total spine items, to clamp spineIndex
+      bool sectionLoaded;        // whether a Section is currently loaded
+      int cachedPageCount;       // pending-remap source page count, 0 if none
+      int cachedSpineIndex;      // spine the cached page count belongs to
+      bool sameQuery;            // query matches the previous search
+      int lastResultSpineIndex;  // spine of the previous match, -1 if none
+      int lastResultPage;        // page of the previous match, -1 if none
+    };
+
+    // Resolve the start spine/page and decide fresh search vs "find next" from
+    // the reader's launch state. A repeated find-next on the same match begins
+    // one page past it; everything else begins at the originating page.
+    static SearchRoute plan(const Origin& origin);
+
+    // Translate page coordinates captured before a viewport reflow into the
+    // loaded section's pagination. A zero source count means no remap is pending.
+    void resolvePageCount(int targetPageCount);
+  };
+
+  EpubReaderSearchActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const std::shared_ptr<Epub>& epub,
+                           const char* query, const SearchRoute& route, uint16_t viewportWidth,
+                           uint16_t viewportHeight);
+
+  void onEnter() override;
+  void onExit() override;
+  void loop() override;
+  void render(RenderLock&&) override;
+  bool skipLoopDelay() override;
+  bool preventAutoSleep() override;
+
+ private:
+  enum class SearchState : uint8_t { Searching, NotFound, Error };
+
+  std::shared_ptr<Epub> epub;
+  Section section;
+  std::array<char, SearchMatcher::MAX_QUERY_BYTES + 1> query{};
+  SearchMatcher matcher;
+  // Snapshot of `matcher` taken at the start of each scanned chunk so a
+  // corrupt-cache rebuild can roll the carried match state back and rescan.
+  // A reused member rather than a per-chunk stack local (~0.5 KB) to keep the
+  // cooperative scan loop's stack small.
+  SearchMatcher matcherBeforeChunk;
+  SearchRoute route;
+  int currentSpineIndex;
+  int currentPage;
+  const uint16_t viewportWidth;
+  const uint16_t viewportHeight;
+  SearchState state = SearchState::Searching;
+  bool sectionLoaded = false;
+  bool sectionCacheRepairAttempted = false;
+  bool wrapped = false;
+
+  // Last progress percentage painted to the panel. Repaints are gated on this
+  // changing so the e-ink panel is not refreshed per page. Starts at 0 because
+  // onEnter() paints the initial 0% screen before the scan begins.
+  int lastProgressPercent = 0;
+  // millis() of the last progress repaint, for the time-based repaint throttle
+  // (see PROGRESS_REPAINT_MIN_INTERVAL_MS). Each e-ink refresh both blocks the
+  // scan ~380ms and slows the next section's cold reads via the shared SPI bus,
+  // so refresh cadence dominates search latency; throttling by wall-clock keeps
+  // it bounded regardless of book length.
+  unsigned long lastProgressRepaintMs = 0;
+  // Byte-weighted book position (0-1, via Epub::calculateProgress) where the
+  // scan began, and the length of its route to the stop page (forward to the end
+  // of the book, wrap, then up to the stop page). Captured once the start spine
+  // loads; progress is (work since start) / route length. scanStartPos is
+  // negative until captured.
+  float scanStartPos = -1.0f;
+  float scanRouteLength = 0.0f;
+
+  bool advanceSpineIfNeeded();
+  bool ensureSectionLoaded();
+  bool reachedWrappedStop() const;
+  bool shouldScanWrappedStopContinuation() const;
+  void advanceSpine();
+  // Invalidate the current spine's section so the next scan rebuilds it: reset the
+  // section for this spine, mark it unloaded, and delete the on-disk cache. Used by
+  // the corrupt-cache repair and give-up paths so both teardown sequences stay in step.
+  void dropSectionCache();
+  void scanNextPage();
+  // Approximate 0-100 fraction of the scan route completed: the byte-weighted
+  // distance travelled since the search began, over the route length (forward to
+  // the end of the book, wrap, then up to the originating page).
+  int searchProgressPercent() const;
+  void setFailure(SearchState failureState);
+  void cancel();
+};

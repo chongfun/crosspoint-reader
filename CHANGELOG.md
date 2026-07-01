@@ -1,4 +1,11 @@
 # Changelog
+
+## [Unreleased]
+
+### Added
+
+- In-book search: find a word or phrase within the current EPUB and jump to a match, with the matched words highlighted on the page. Matching respects word boundaries while still finding words broken by hyphenation across a line or page.
+
 ## [v1.3.4] - 2026-06-24
 
 ### Added

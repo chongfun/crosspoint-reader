@@ -170,7 +170,7 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(bool
   auto& bookmarkItems = items[BOOKMARKS_TAB_INDEX];
   auto& settingsItems = items[SETTINGS_TAB_INDEX];
 
-  mainItems.reserve(8 + (hasFootnotes ? 1u : 0u));
+  mainItems.reserve(9 + (hasFootnotes ? 1u : 0u));
   bookmarkItems.reserve(7 + (hasBookmarks ? 2u : 0u) + (hasClippings ? 1u : 0u));
   settingsItems.reserve(2 + (showReadingPaceReset ? 1u : 0u));
 
@@ -178,6 +178,7 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(bool
     mainItems.push_back({MenuAction::FOOTNOTES, StrId::STR_FOOTNOTES});
   }
   mainItems.push_back({MenuAction::SELECT_CHAPTER, StrId::STR_SELECT_CHAPTER});
+  mainItems.push_back({MenuAction::SEARCH, StrId::STR_SEARCH});
   mainItems.push_back({MenuAction::READER_OPTIONS, StrId::STR_READER_OPTIONS});
   mainItems.push_back({MenuAction::CONTROLS_OPTIONS, StrId::STR_CAT_CONTROLS});
   mainItems.push_back({MenuAction::GO_TO_PERCENT, StrId::STR_GO_TO_PERCENT});
@@ -205,6 +206,7 @@ EpubReaderMenuActivity::TabMenuItems EpubReaderMenuActivity::buildMenuItems(bool
   if (showReadingPaceReset) {
     settingsItems.push_back({MenuAction::RESET_READING_PACE, StrId::STR_RESET_READING_PACE});
   }
+
   return items;
 }
 
