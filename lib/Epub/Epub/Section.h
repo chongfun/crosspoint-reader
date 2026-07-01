@@ -60,9 +60,6 @@ class Section {
   // place that knows where that field lives). Requires the member file to be
   // open; returns false on seek/read failure.
   bool readPageLutOffset(uint32_t& lutOffset);
-  // Lazily open the scan file and cache its size and page-LUT offset. Returns
-  // false on open failure or a truncated/corrupt header.
-  bool ensureSearchHeader();
   // Rewrite filePath's numeric suffix in place for the current spineIndex,
   // reusing the buffer (no per-spine string allocation, no std::to_string).
   void rebuildFilePathForSpine();
@@ -110,6 +107,11 @@ class Section {
     CorruptCache,  // structurally invalid cache data; a rebuild may help
     IoError,       // seek/open failure or OOM; rebuilding will not help
   };
+
+  // Lazily open the scan file and cache its size and page-LUT offset. Returns
+  // false on failure, setting failureStatus to IoError for a transient open/read
+  // problem (a rebuild cannot fix it) or CorruptCache for a truncated header.
+  bool ensureSearchHeader(ScanStatus& failureStatus);
 
   struct ScanResult {
     ScanStatus status = ScanStatus::NoMatch;

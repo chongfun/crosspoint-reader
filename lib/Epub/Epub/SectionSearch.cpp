@@ -24,10 +24,11 @@ Section::ScanResult Section::scanForward(uint16_t startPage, uint16_t endPage, S
     endPage = pageCount;
   }
 
-  if (!ensureSearchHeader()) {
-    // If ensureSearchHeader failed due to missing file/bad header,
-    // we'll just treat it as a corrupt cache to let the caller handle it.
-    return {ScanStatus::CorruptCache, -1};
+  // ensureSearchHeader distinguishes a transient I/O failure from a corrupt
+  // header so we do not delete a valid cache over a momentary glitch.
+  ScanStatus headerFailure = ScanStatus::CorruptCache;
+  if (!ensureSearchHeader(headerFailure)) {
+    return {headerFailure, -1};
   }
   const uint32_t fileSize = searchFileSize;
   const uint32_t lutOffset = searchLutOffset;

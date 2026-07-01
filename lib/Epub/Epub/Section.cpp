@@ -425,15 +425,19 @@ void Section::resetForSpine(const int newSpineIndex) {
   searchHeaderReady = false;
 }
 
-bool Section::ensureSearchHeader() {
+bool Section::ensureSearchHeader(ScanStatus& failureStatus) {
   if (searchHeaderReady) {
     return true;
   }
 
   // Open the member file handle lazily on the first call. It stays open for
-  // all pages in this section; resetForSpine() closes it when advancing.
+  // all pages in this section; resetForSpine() closes it when advancing. An
+  // open failure is transient I/O, not cache corruption, so a rebuild cannot
+  // fix it.
   if (!file) {
     if (!Storage.openFileForRead("SCT", filePath, file)) {
+      LOG_ERR("SCT", "Search failed: could not open section cache file");
+      failureStatus = ScanStatus::IoError;
       return false;
     }
   }
@@ -444,13 +448,17 @@ bool Section::ensureSearchHeader() {
     // Release the handle so the corrupt cache can be invalidated/rebuilt; the
     // next call reopens lazily (searchHeaderReady stays false).
     file.close();
+    failureStatus = ScanStatus::CorruptCache;
     return false;
   }
 
+  // The header fits within the validated fileSize, so a seek/read failure here
+  // is an I/O problem rather than malformed data.
   uint32_t lutOffset = 0;
   if (!readPageLutOffset(lutOffset)) {
     LOG_ERR("SCT", "Search failed: could not read page LUT offset");
     file.close();
+    failureStatus = ScanStatus::IoError;
     return false;
   }
 
