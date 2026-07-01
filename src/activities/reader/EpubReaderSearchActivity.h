@@ -92,6 +92,12 @@ class EpubReaderSearchActivity final : public Activity {
   // changing so the e-ink panel is not refreshed per page. Starts at 0 because
   // onEnter() paints the initial 0% screen before the scan begins.
   int lastProgressPercent = 0;
+  // millis() of the last progress repaint, for the time-based repaint throttle
+  // (see PROGRESS_REPAINT_MIN_INTERVAL_MS). Each e-ink refresh both blocks the
+  // scan ~380ms and slows the next section's cold reads via the shared SPI bus,
+  // so refresh cadence dominates search latency; throttling by wall-clock keeps
+  // it bounded regardless of book length.
+  unsigned long lastProgressRepaintMs = 0;
   // Byte-weighted book position (0-1, via Epub::calculateProgress) where the
   // scan began, and the length of its route to the stop page (forward to the end
   // of the book, wrap, then up to the stop page). Captured once the start spine

@@ -15,9 +15,15 @@
 #include "fontIds.h"
 
 namespace {
-// Repaint the progress screen only once the percentage has advanced this much,
-// keeping e-ink refreshes bounded now that progress moves per page.
-constexpr int PROGRESS_REPAINT_STEP_PERCENT = 10;
+// Minimum wall-clock gap between progress-screen repaints. Each repaint is a
+// full-panel FAST_REFRESH that single-core-blocks the scan ~380ms AND disturbs
+// the shared SPI bus so the next freshly-opened section's reads run ~5x slower
+// (~440ms penalty) — measured on hardware. Refresh cadence therefore dominates
+// search latency far more than the scan itself, so we throttle by time rather
+// than by percent: this bounds refreshes to ~one per interval no matter how
+// large the book or how fast the scan, while still feeling live. Raising it
+// trades progress smoothness for less refresh overhead.
+constexpr unsigned long PROGRESS_REPAINT_MIN_INTERVAL_MS = 2000;
 }  // namespace
 
 EpubReaderSearchActivity::SearchRoute EpubReaderSearchActivity::SearchRoute::plan(const Origin& origin) {
@@ -313,13 +319,17 @@ void EpubReaderSearchActivity::loop() {
         return;
       }
       scanNextPage();
-      // Progress is now page-granular, so only repaint once it has advanced a
-      // whole step. This bounds e-ink refreshes to ~100/step over an entire
-      // scan regardless of book structure, instead of one per page.
+      // Repaint the progress percentage at most once per interval. Each e-ink
+      // refresh is expensive (see PROGRESS_REPAINT_MIN_INTERVAL_MS), so we gate
+      // on both a changed percentage and elapsed wall-clock rather than per page
+      // or per percent — keeping refreshes (and the scan stalls they cause) rare
+      // no matter the book size.
       if (state == SearchState::Searching) {
         const int percent = searchProgressPercent();
-        if (percent - lastProgressPercent >= PROGRESS_REPAINT_STEP_PERCENT) {
+        const unsigned long now = millis();
+        if (percent != lastProgressPercent && now - lastProgressRepaintMs >= PROGRESS_REPAINT_MIN_INTERVAL_MS) {
           lastProgressPercent = percent;
+          lastProgressRepaintMs = now;
           requestUpdate();
         }
       }
